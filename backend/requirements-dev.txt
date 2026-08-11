@@ -1,0 +1,6 @@
+-r requirements.txt
+# pytest pin merged from corpusgen/requirements.txt (its tests ship with the
+# generator); pytest-asyncio bumped in lockstep -- 0.25.x caps pytest <9.
+pytest==9.1.1
+pytest-asyncio==1.4.0
+ruff==0.8.4

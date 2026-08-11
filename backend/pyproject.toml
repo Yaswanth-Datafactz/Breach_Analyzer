@@ -1,0 +1,10 @@
+[project]
+name = "breach-analytics-backend"
+version = "0.1.0"
+description = "Breach Analytics at Scale backend (DataFactZ AI Engineering Internship, Use Case 3 — capstone)"
+requires-python = ">=3.12"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"

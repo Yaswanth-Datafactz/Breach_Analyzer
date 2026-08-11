@@ -1,0 +1,33 @@
+# Mirrors UC2's backend/requirements.txt, minus openai (UC3's tier 2 and
+# agents are Anthropic -- docs/plan.md D3), plus the UC3-specific set below.
+# corpusgen/ shares this environment (docs/plan.md §8's renderers are the
+# reportlab/pikepdf/docx/openpyxl/faker entries). corpusgen/requirements.txt
+# was merged in here and deleted (its pins win for faker/reportlab/
+# python-docx/pymupdf -- the generator's renderers were written against
+# those; the backend's PyMuPDF usage is version-stable).
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.3
+structlog==24.4.0
+python-dotenv==1.0.1
+httpx==0.28.1
+pymupdf==1.28.2
+pytesseract==0.3.13
+opencv-python-headless==4.10.0.84
+pillow==11.0.0
+rapidfuzz==3.10.1
+python-multipart==0.0.20
+# UC3 additions
+anthropic==0.116.0
+jellyfish==1.1.3
+pikepdf==9.4.2
+extract-msg==0.52.0
+python-magic==0.4.27
+faker==40.36.0
+reportlab==5.0.0
+python-docx==1.2.0
+openpyxl==3.1.5
