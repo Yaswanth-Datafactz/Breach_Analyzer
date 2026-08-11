@@ -1,6 +1,13 @@
 """Versioned tier-1 extraction prompts (docs/plan.md §3). `PROMPT_VERSION`
 is stamped on every `extraction_jobs` row so an accuracy number is always
 attributable to the exact prompt that produced it (UC2 convention).
+**v1** was the Day-1 DeepSeek spike prompt (Aug 11): it asked the model
+for char_start/char_end (measured 0/10 correct -> dropped per D9), asked
+for dob on mentions (dropped -- one home per fact), and stated the
+staff-signature rule softly enough that the model hedged staff IN at 0.3
+confidence when subject PII was also present. **v2** (this file) drops
+every offset instruction, drops mention-level dob, and hardens the
+staff-signature rule to full omission.
 
 Guardrail carried over from UC2: passage content is delimited in `<passage>`
 tags and explicitly declared inert data, never instructions -- a breach dump
@@ -9,9 +16,10 @@ than UC2's invoices were.
 
 Ordering is deliberate and load-bearing (docs/plan.md §9): the stable
 system prompt (instructions + schema) comes FIRST and the volatile passage
-comes LAST in the user message, so provider-side prefix caching (DeepSeek's
-automatic prompt cache now; Anthropic's explicit cache_control at tier 2)
-gets the longest possible stable prefix on every call.
+comes LAST in the user message, so provider-side prefix caching (Anthropic's
+explicit cache_control at tier 2; DeepSeek-side caching measured at ZERO
+hits through Foundry in the spike -- kept for tier-2 value and never banked
+in extrapolations per D9) gets the longest possible stable prefix.
 
 Field names below are built directly from the Pydantic models in
 schemas.py, never hand-retyped -- UC2's fix for a real, live-verified bug:
@@ -26,7 +34,7 @@ import json
 
 from app.services.extraction.schemas import ElementOut, ElementType, MentionOut
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 
 _ELEMENT_TYPES = ", ".join(t.value for t in ElementType)
 _MENTION_FIELD_NAMES = ", ".join(MentionOut.model_fields)
@@ -37,28 +45,28 @@ _SCHEMA_DESCRIPTION = f"""The JSON object you return must have EXACTLY two top-l
 "mentions": a JSON array, one object per distinct person referred to in the passage. Each object has EXACTLY these keys, spelled exactly as given:
 {_MENTION_FIELD_NAMES}
 - name_raw: the person's name EXACTLY as printed in the passage -- keep nicknames, initials, misspellings, and "Last, First" ordering verbatim; never expand, correct, or reorder a name.
-- dob: the person's date of birth exactly as printed, ONLY if the passage states it for this person; otherwise null.
 - confidence: your certainty (0.0-1.0) that this is a genuine reference to an individual person.
 
 "elements": a JSON array, one object per personal data element found in the passage. Each object has EXACTLY these keys, spelled exactly as given:
 {_ELEMENT_FIELD_NAMES}
 - element_type: exactly one of: {_ELEMENT_TYPES}
-- value_raw: the value EXACTLY as printed (do not reformat, add, or remove separators, whitespace, or punctuation).
+- value_raw: the value EXACTLY as printed, character for character (do not reformat, add, or remove separators, whitespace, or punctuation). This exact string is matched back into the passage text mechanically -- if it is not a verbatim copy, the element cannot be anchored and is sent to human review.
 - mention_ref: the 0-based index into your "mentions" array of the person this element belongs to. Use null ONLY when the passage gives no way to tell whose value it is -- never guess an owner, and never invent a mention to attach an orphan value to.
-- char_start, char_end: the character offsets of value_raw inside the passage text, counting from 0 at the first character of the passage, char_end exclusive -- passage_text[char_start:char_end] must equal value_raw exactly. Count every character including spaces and newlines.
 - confidence: your certainty (0.0-1.0) that this is a genuine personal data element of that type.
 
-Every mention's name must ALSO appear in "elements" as an element_type "name" entry (with offsets and mention_ref pointing back at that mention) -- names are exposed personal data too."""
+A person's date of birth, when printed, is an element (element_type "dob", value_raw exactly as printed, mention_ref pointing at the person) -- there is no dob field on mentions.
+
+Every mention's name must ALSO appear in "elements" as an element_type "name" entry (with mention_ref pointing back at that mention) -- names are exposed personal data too."""
 
 _RULES = """Rules:
-1. Extract ONLY personal data elements genuinely present in the passage. Never infer, derive, or complete a value that is not printed there.
+1. Extract ONLY personal data elements genuinely present in the passage. Never infer, derive, or complete a value that is not printed there. Do not report character positions or offsets anywhere; they are computed mechanically from value_raw.
 2. NOT personal data -- never extract these even when they match a PII format:
    - order numbers, invoice numbers, ticket numbers, case numbers, and other business reference numbers, even when formatted like an SSN or card number (e.g. "Order #123-45-6789" is a reference number, not an SSN);
    - template placeholders and format examples (e.g. "{{ssn}}", "XXX-XX-1234", "format: 000-00-0000");
-   - records explicitly marked TEST, SAMPLE, DUMMY, or EXAMPLE;
-   - the business contact details of a document's own author, sender, or handling staff appearing in a signature block or letterhead in a professional capacity (their name and title identify a document handler, not an affected data subject).
-3. A number's label and surrounding words decide its type; its format alone never does. If the passage does not indicate what a value is, and its format alone is the only evidence, lower the confidence accordingly.
-4. If the passage contains no personal data at all, return {"mentions": [], "elements": []}. An empty result is a correct result for a clean passage.
+   - records explicitly marked TEST, SAMPLE, DUMMY, or EXAMPLE.
+3. Document handlers are OMITTED ENTIRELY: a document's own author, sender, or handling staff appearing in a signature block, letterhead, "From:"/"Reported by:"/"Handled by:" line, or similar professional capacity is NOT an affected data subject. Do not include such a person as a mention, do not include their name, business email, or business phone as elements -- not at reduced confidence, not at any confidence. Omission is the only correct treatment; including a handler with a low confidence score is wrong. The people the DOCUMENT IS ABOUT (addressees, members, customers, subjects of records) are extracted normally.
+4. A number's label and surrounding words decide its type; its format alone never does. If the passage does not indicate what a value is, and its format alone is the only evidence, lower the confidence accordingly.
+5. If the passage contains no personal data at all, return {"mentions": [], "elements": []}. An empty result is a correct result for a clean passage.
 
 Respond with ONLY the JSON object -- no commentary, no markdown code fences, no additional or renamed keys."""
 
@@ -84,7 +92,7 @@ _REPAIR_TEMPLATE = """Your previous extraction failed validation against the sch
 These specific fields failed validation:
 {errors}
 
-Return a corrected JSON object for the FULL schema (not just the failing fields) with only those fields fixed -- do not change any field that was not listed above as failing. The passage you extracted from is repeated below so you can recount character offsets if an offset field failed.
+Return a corrected JSON object for the FULL schema (not just the failing fields) with only those fields fixed -- do not change any field that was not listed above as failing. The passage you extracted from is repeated below so you can re-copy any value_raw verbatim from it.
 
 <passage>
 {passage_text}</passage>"""
@@ -96,9 +104,9 @@ def build_tier1_prompt(passage_text: str) -> tuple[str, str]:
 
 def build_repair_prompt(raw_json: dict, errors: list[dict], passage_text: str) -> tuple[str, str]:
     """One bounded repair (docs/plan.md §3), UC2 pattern -- with one
-    deviation: the passage is included again, because unlike UC2's
-    field-level repairs, offset errors here cannot be fixed without the
-    text they index into."""
+    deviation: the passage is included again. In v1 that was for offset
+    recounting; in v2 it remains because value_raw must be a verbatim
+    copy, and the model can only re-copy verbatim from the text itself."""
     error_lines = "\n".join(f"- {e['loc']}: {e['msg']}" for e in errors)
     user_prompt = _REPAIR_TEMPLATE.format(
         raw_json=json.dumps(raw_json, default=str), errors=error_lines, passage_text=passage_text

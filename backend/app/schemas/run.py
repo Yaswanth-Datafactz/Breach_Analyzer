@@ -6,7 +6,17 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class RunCreateIn(BaseModel):
+    """POST /runs body: the corpus directory to process. Everything else a
+    run needs (models, thresholds, concurrency) comes from config and is
+    frozen into config_snapshot by the pipeline -- the caller picks the
+    corpus, never the knobs (docs/plan.md §4: replayable from documents +
+    config snapshot)."""
+
+    corpus_path: str = Field(min_length=1, description="Directory containing the corpus to ingest")
 
 
 class RunOut(BaseModel):

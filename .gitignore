@@ -9,6 +9,9 @@ docs/
 # Generated corpus, manifest, and eval outputs (reproducible: python -m corpusgen --seed 42)
 data/
 
+# Runtime content-addressed original/page-image store
+backend/storage/
+
 # Python
 __pycache__/
 *.py[cod]

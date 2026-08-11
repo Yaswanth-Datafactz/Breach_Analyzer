@@ -18,6 +18,9 @@ httpx==0.28.1
 pymupdf==1.28.2
 pytesseract==0.3.13
 opencv-python-headless==4.10.0.84
+# numpy was already a transitive dep (opencv); pinned now that corpusgen's
+# scanned-PDF degradation imports it directly.
+numpy==2.5.2
 pillow==11.0.0
 rapidfuzz==3.10.1
 python-multipart==0.0.20
