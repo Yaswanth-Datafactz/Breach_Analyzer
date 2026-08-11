@@ -1,0 +1,27 @@
+# Local planning docs stay out of git (house convention — shipped artifacts live in deliverables/)
+docs/
+
+# Secrets — a committed key is an automatic deduction
+.env
+*.env
+!*.env.example
+
+# Generated corpus, manifest, and eval outputs (reproducible: python -m corpusgen --seed 42)
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+.idea/

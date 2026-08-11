@@ -1,0 +1,36 @@
+# Pinned so compose's project name (and therefore its network/volume names)
+# never changes if this repo folder is renamed or moved -- otherwise compose
+# derives the project name from the containing directory's basename by
+# default, which would silently orphan this project's existing volume.
+# (UC2's convention, kept.)
+name: breach_analytics
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: breach_analytics_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: breach_analytics
+      POSTGRES_PASSWORD: breach_analytics_dev
+      POSTGRES_DB: breach_analytics
+    ports:
+      # Host 5434 -> container 5432: UC1's postgres holds host 5432 and
+      # UC2's holds 5433 when the projects run side by side on this machine
+      # (docs/plan.md §7's port table).
+      - "5434:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U breach_analytics -d breach_analytics"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # No backend service yet: the backend container ships with the Azure App
+  # Service deployment (docs/plan.md §13, Thu/Fri) -- until a Dockerfile
+  # exists, listing it here would make `docker compose up` fail. Local dev
+  # runs the native-Python path (venv + uvicorn --port 8002).
+
+volumes:
+  pg_data:
