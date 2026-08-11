@@ -1,0 +1,44 @@
+/*
+ * DataFactZ brand tokens (Handbook §7) — the single source of truth for
+ * color, radius, and typography across every internship use case's UI.
+ * Phase 6 (Admin) and future use cases import this same file rather than
+ * redefining any of these values.
+ *
+ * Semantic surface/ink tokens (--color-surface*, --color-ink*, --color-line)
+ * are theme-swappable: this block sets their dark-mode values (the
+ * DataFactZ default), and [data-theme='light'] below overrides them for
+ * light mode. Tailwind's generated utility classes (bg-surface, text-ink,
+ * etc.) reference the underlying CSS variable, so they repaint correctly
+ * whenever <html data-theme> changes — no separate light/dark class pairs
+ * needed anywhere else in the app.
+ */
+
+@theme {
+  /* Brand palette (Handbook §7, exact hex values) */
+  --color-brand-yellow: #f4ad0b;
+  --color-brand-orange: #fc7900;
+  --color-brand-red: #e3434a;
+  --color-brand-navy: #182127;
+
+  /* Semantic surfaces/ink — dark mode values (default) */
+  --color-surface: #14191d;
+  --color-surface-raised: #182127;
+  --color-line: #2a333a;
+  --color-ink: #f2f4f5;
+  --color-ink-muted: #9aa7ad;
+
+  /* Typography */
+  --font-sans: 'InterVariable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+
+  /* Radii (Handbook §7: rounded-xl cards / rounded-md buttons / rounded-full pills) */
+  --radius-card: 0.75rem; /* 12px */
+  --radius-btn: 0.375rem; /* 6px */
+}
+
+[data-theme='light'] {
+  --color-surface: #f7f7f8;
+  --color-surface-raised: #ffffff;
+  --color-line: #e4e4e7;
+  --color-ink: #182127;
+  --color-ink-muted: #5b6570;
+}
