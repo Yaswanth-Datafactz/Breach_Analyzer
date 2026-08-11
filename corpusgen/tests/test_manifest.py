@@ -61,9 +61,10 @@ class TestManifestShape:
         entry = _build()["documents"][0]
         assert set(entry) == {
             "doc_uid", "filename", "file_class", "renderer",
-            "scenario_tags", "problem", "plantings",
+            "scenario_tags", "problem", "attachments", "plantings",
         }
         assert entry["problem"] is None
+        assert entry["attachments"] is None
 
 
 class TestRoundTrip:

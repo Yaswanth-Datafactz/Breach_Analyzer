@@ -25,7 +25,14 @@ from dataclasses import dataclass
 
 from faker import Faker
 
-from corpusgen.renderers import DocumentSpec, Paragraph, Plant, Table
+from corpusgen.renderers import (
+    DocumentSpec,
+    EmailAttachment,
+    EmailSpec,
+    Paragraph,
+    Plant,
+    Table,
+)
 
 COMPANY = "Meridian Benefits Group"
 COMPANY_DOMAIN = "meridianbenefits.example"
@@ -448,6 +455,70 @@ def support_ticket(
         Paragraph(f"Handled by {agent.name} — Customer Support, {COMPANY}."),
     ]
     return DocumentSpec("support_ticket", f"{COMPANY} — Support Ticket Export", doc_date, blocks)
+
+
+# --- archetype: internal email thread (eml) --------------------------------
+
+_EMAIL_SUBJECTS = [
+    "Payroll record correction",
+    "Benefits enrollment follow-up",
+    "Dependent verification paperwork",
+    "Returned direct deposit — action needed",
+    "Records request from claims",
+]
+
+
+def email_message(
+    rng: random.Random,
+    staff: list[Staff],
+    doc_date: dt.date,
+    subject_name: str,
+    plants: list[Plant],
+    attachments: list[EmailAttachment],
+    signature_contact: bool = False,
+) -> EmailSpec:
+    """Internal staff-to-staff email ABOUT the subject person. When
+    signature_contact is set, the sender's full signature block (company
+    email + phone) closes the body — the caller records those as trap
+    plantings, keeping the manifest a complete account of extractable
+    contact strings."""
+    name_plant, element_plants = _split_name_plant(plants)
+    sender, recipient = rng.sample(staff, 2)
+    subject = rng.choice(_EMAIL_SUBJECTS)
+    blocks = [
+        Paragraph(f"Hi {recipient.name.split()[0]},"),
+        Paragraph(
+            f"Following up on the record for {subject_name} — details below.",
+            plants=[name_plant] if name_plant else [],
+        ),
+    ]
+    blocks.extend(_body_paragraphs(rng, subject_name, element_plants))
+    if attachments:
+        listed = ", ".join(a.filename for a in attachments)
+        blocks.append(Paragraph(f"Attached for reference: {listed}."))
+    if signature_contact:
+        sig_email = Plant(None, "trap_signature_email", sender.email, presentation="signature")
+        sig_phone = Plant(None, "trap_signature_phone", sender.phone, presentation="signature")
+        blocks.append(
+            Paragraph(
+                f"Thanks,\n{sender.name}\n{sender.title}, {COMPANY}\n"
+                f"{sender.email}\n{sender.phone}",
+                plants=[sig_email, sig_phone],
+            )
+        )
+    else:
+        blocks.append(Paragraph(f"Thanks,\n{sender.name}\n{sender.title}, {COMPANY}"))
+    return EmailSpec(
+        archetype="email",
+        title=subject,
+        doc_date=doc_date,
+        blocks=blocks,
+        from_name=sender.name,
+        from_email=sender.email,
+        to_name=recipient.name,
+        to_email=recipient.email,
+        attachments=attachments,
+    )
 
 
 # --- FalsePositiveTraps content builders -----------------------------------

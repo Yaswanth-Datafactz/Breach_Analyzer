@@ -25,8 +25,13 @@ class ManifestDocument:
     file_class: str
     renderer: str
     scenario_tags: list[str]
-    problem: dict | None  # always None today; problem-file scenarios fill this
+    # ProblemFiles contract: {kind, expected_reason_code, recoverable,
+    # recovery_hint, ...extras} (renderers/problem_files.py); None elsewhere.
+    problem: dict | None
     plantings: list[dict]
+    # EML only: [{filename, sha256, byte_size}] per MIME attachment — the
+    # sha256s are how the pipeline's dedup saving is measured; None elsewhere.
+    attachments: list[dict] | None = None
 
 
 def identity_dict(identity: Identity) -> dict:
@@ -47,6 +52,7 @@ def document_dict(doc: ManifestDocument) -> dict:
         "renderer": doc.renderer,
         "scenario_tags": doc.scenario_tags,
         "problem": doc.problem,
+        "attachments": doc.attachments,
         "plantings": doc.plantings,
     }
 

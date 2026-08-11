@@ -22,6 +22,33 @@ from corpusgen import config, identities, manifest as manifest_mod, templates, v
 from corpusgen.scenarios import BuildContext, build_scenarios
 
 
+def generate(
+    seed: int, cfg: config.CorpusConfig, out_dir: Path, manifest_path: Path
+) -> dict:
+    """Generate one corpus + manifest (no validation pass). Extracted from
+    main() so tests can run the whole pipeline against tiny configs."""
+    rng = random.Random(seed)
+    faker = Faker("en_US")
+    faker.seed_instance(rng.getrandbits(64))
+
+    pool = identities.generate_identities(rng, faker, cfg)
+    staff = templates.make_staff(rng, faker)
+
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+
+    ctx = BuildContext(
+        rng=rng, faker=faker, cfg=cfg, pool=pool, staff=staff, out_dir=out_dir
+    )
+    for scenario in build_scenarios(cfg):
+        scenario.emit(ctx)
+
+    data = manifest_mod.build(seed, cfg, pool, ctx.documents)
+    manifest_mod.write(manifest_path, data)
+    return data
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="corpusgen",
@@ -50,25 +77,7 @@ def main(argv: list[str] | None = None) -> int:
         return validate.run(args.manifest, args.out)
 
     cfg = config.MINI if args.mini else config.FULL
-    rng = random.Random(args.seed)
-    faker = Faker("en_US")
-    faker.seed_instance(rng.getrandbits(64))
-
-    pool = identities.generate_identities(rng, faker, cfg)
-    staff = templates.make_staff(rng, faker)
-
-    if args.out.exists():
-        shutil.rmtree(args.out)
-    args.out.mkdir(parents=True)
-
-    ctx = BuildContext(
-        rng=rng, faker=faker, cfg=cfg, pool=pool, staff=staff, out_dir=args.out
-    )
-    for scenario in build_scenarios(cfg):
-        scenario.emit(ctx)
-
-    data = manifest_mod.build(args.seed, cfg, pool, ctx.documents)
-    manifest_mod.write(args.manifest, data)
+    data = generate(args.seed, cfg, args.out, args.manifest)
     counts = data["generated_counts"]
     print(
         f"Generated {counts['documents']} documents / {counts['identities']} identities "
