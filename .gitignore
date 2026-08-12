@@ -31,3 +31,7 @@ frontend/dist/
 # Generated fresh by conftest.py every test session (uuid/random-embedded bytes) --
 # tracking them just produces diff noise on every run.
 backend/tests/fixtures/
+
+# Same content-addressed store, occasionally created at repo root when a
+# script runs from the wrong cwd — belt-and-suspenders alongside backend/storage/.
+/storage/
