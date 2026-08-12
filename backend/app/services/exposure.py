@@ -255,9 +255,33 @@ def _attach_or_park_unattached(
     result: ExposureResult,
     linked_by_person: dict[uuid.UUID, list[PiiElement]],
     extra_by_person: dict[uuid.UUID, list[PiiElement]],
+    valid_person_ids: set[uuid.UUID],
 ) -> None:
     """Resolve every run-level unattached element: join to exactly one
-    person (recorded on the element's signals) or park for review."""
+    person (recorded on the element's signals) or park for review.
+
+    `valid_person_ids` guards a real staleness bug (found by the pipeline
+    auto-trigger track's own idempotency test, docs/plan.md §14c/§14d
+    territory): services/er/persist.py's run_er_stage documents itself as
+    an idempotent replay that "wipes and rebuilds" a run's Person rows --
+    deleting them and reinserting fresh ones with BRAND NEW UUIDs even when
+    cluster membership is unchanged. An element's
+    signals.er_join_person_id/reviewer_attached_person_id is a raw person
+    UUID with no update-on-replay path, so after any second run_er_stage
+    call on the same run (threshold recalibration, a future recalibrate
+    endpoint, or simply calling the stage twice) the pointer silently
+    targets a person that no longer exists. Before this guard, the
+    "already resolved" skip below trusted that dangling pointer forever --
+    the element's evidence vanished from every subsequent exposure
+    computation with no error, no review item, nothing (reproduced
+    deterministically: two consecutive run_er_stage+compute_exposure calls
+    with a join-attached element go from attached_via_join=1 to 0 and lose
+    its evidence row, even though nothing about the underlying data
+    changed). Treating a pointer to a non-current person as unresolved
+    makes this self-healing: an er_join_person_id re-derives the identical
+    person via the same deterministic key match; a reviewer_attached_person_id
+    that the mechanical join can't rediscover safely re-parks for review
+    (never silently dropped) rather than losing its evidence with no trace."""
     unattached = list(
         db.scalars(
             select(PiiElement)
@@ -275,8 +299,11 @@ def _attach_or_park_unattached(
 
     for element in unattached:
         signals = dict(element.signals or {})
-        if signals.get("reviewer_attached_person_id") or signals.get("er_join_person_id"):
-            continue  # already resolved on a previous pass
+        attached_to = signals.get("reviewer_attached_person_id") or signals.get(
+            "er_join_person_id"
+        )
+        if attached_to and uuid.UUID(attached_to) in valid_person_ids:
+            continue  # already resolved on a previous pass, target still current
         if not _usable(element):
             result.skipped_not_valid += 1
             continue
@@ -462,7 +489,9 @@ def compute_exposure(
     extra_by_person = _signal_attached_elements_by_person(db, run_id)
 
     if person_ids is None:
-        _attach_or_park_unattached(db, run_id, result, linked_by_person, extra_by_person)
+        _attach_or_park_unattached(
+            db, run_id, result, linked_by_person, extra_by_person, set(scope_ids)
+        )
 
     for person in persons:
         elements = linked_by_person.get(person.id, []) + extra_by_person.get(person.id, [])
