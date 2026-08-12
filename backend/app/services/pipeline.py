@@ -2,13 +2,18 @@
 job-runner pattern -- status rows + startup stale-job reaper; Celery/arq
 named as the explicit 100x-load upgrade path in §12, not built now).
 
-Phase B1 stages: INGEST (inventory -> sha256 dedup -> classify -> route or
+Stages: INGEST (inventory -> sha256 dedup -> classify -> route or
 quarantine, originals stored content-addressed) -> PARSE (per-type parser;
 email attachments recursively re-ingested as child documents) -> passages
 persisted -> tier-0 detectors IF the parallel detectors track has landed
-(try-import; skipped with a log line otherwise). Extraction tiers 1/2 and
-ER attach behind this in phase B2 -- documents go straight to `done` after
-parse+tier-0 today.
+(try-import; skipped with a log line otherwise) -> B2's tier-1/tier-2
+EXTRACTION stage (services/extraction/service.py) under the SAME
+degrade-gracefully contract as the tier-0 try-import: with no
+DEEPSEEK_API_KEY configured the stage is skipped -- logged once per run --
+and documents finish `done` at tier-0 depth, so frontend/dev data keeps
+working and the live keyed run later is config-only. Each extracted
+document gets an extraction_jobs row (status/tier_path/token+cost rollups;
+the one-live-job partial unique index guards double-dispatch).
 
 Failure semantics ("nothing silently dropped", CLAUDE.md):
 - No exception ever escapes a single document. Known file-is-broken
@@ -26,12 +31,12 @@ semaphore (settings.extraction_max_concurrency -- the same 3-5 knob plan
 coordinator serializes counter updates in the event loop, so no two writers
 ever touch the run row concurrently.
 
-Dedup (plan §9 rule 2): documents.sha256 is UNIQUE, so identical content --
-the same attachment on five emails, a duplicated corpus file -- is stored
-and parsed exactly once; later sightings are counted in the run's
-`deduped` counter and logged with both paths. The UNIQUE constraint is
-global (not per-run), so re-processing an already-ingested corpus requires
-clearing the earlier run's rows first.
+Dedup (plan §9 rule 2): documents.sha256 is UNIQUE per run (migration 002,
+docs/plan.md §14b R2), so identical content WITHIN a run -- the same
+attachment on five emails, a duplicated corpus file -- is stored and parsed
+exactly once; later sightings are counted in the run's `deduped` counter
+and logged with both paths. Across runs, rows are independent (re-processing
+a corpus just works); byte storage stays globally content-addressed.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import subprocess
 import uuid
 import zipfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pikepdf
@@ -50,13 +56,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.models import Document
+from app.db.models import Document, ExtractionJob
 from app.db.session import SessionLocal
 from app.repositories.documents import DocumentRepository
 from app.repositories.passages import PassageRepository
 from app.repositories.pii_elements import PiiElementRepository
 from app.repositories.processing import ProcessingRepository
 from app.repositories.quarantines import QuarantineRepository
+from app.services.extraction import get_tier1_adapter, get_tier2_adapter
+from app.services.extraction.service import ExtractionOutcome, run_extraction_sync
 from app.services.ingestion import classify
 from app.services.ingestion.inventory import (
     declared_mime_for,
@@ -121,6 +129,12 @@ _COUNTER_KEYS = (
     "passages",
     "tier0_elements",
     "ocr_documents",
+    # B2 extraction stage (0 whenever the stage is skipped -- no key)
+    "extracted",
+    "mentions",
+    "llm_elements",
+    "tier1_calls",
+    "tier2_calls",
 )
 
 
@@ -152,6 +166,9 @@ def build_config_snapshot(*, corpus_path: str) -> dict:
             "er_distinct": settings.er_distinct_threshold,
             "ocr_min_chars_per_page": settings.ocr_min_chars_per_page,
             "ocr_max_garbage_ratio": settings.ocr_max_garbage_ratio,
+            "extraction_chunk_max_tokens": settings.extraction_chunk_max_tokens,
+            "sheet_sample_rows": settings.sheet_sample_rows,
+            "vision_ocr_conf_threshold": settings.vision_ocr_conf_threshold,
         },
         "concurrency": settings.extraction_max_concurrency,
     }
@@ -189,7 +206,7 @@ def _ingest_one(
     route says so). Returns (document|None, was_duplicate) -- None document
     means the content was already known and no new row was created."""
     documents = DocumentRepository(db)
-    existing = documents.get_by_sha256(sha256)
+    existing = documents.get_by_sha256(sha256, run_id=run_id)
     if existing is not None:
         logger.info(
             "ingest_deduped",
@@ -315,6 +332,12 @@ class _DocumentOutcome:
     child_ingested: int = 0
     child_deduped: int = 0
     child_quarantined: int = 0
+    # B2 extraction stage rollups (all zero when the stage is skipped)
+    extracted: bool = False
+    mentions: int = 0
+    llm_elements: int = 0
+    tier1_calls: int = 0
+    tier2_calls: int = 0
 
 
 def _cross_passage_trap_reason(persisted: list, index: int, hit) -> str | None:
@@ -483,7 +506,57 @@ def _ocr_garbage_detail(result: ParseResult) -> str | None:
     return None
 
 
-def _process_document(document_id: uuid.UUID) -> _DocumentOutcome:
+def _run_extraction_stage(db: Session, document: Document) -> ExtractionOutcome | None:
+    """B2 extraction over one parsed document, wrapped in an
+    extraction_jobs row (§4: status, tier_path, attempts, token/cost
+    rollups; the one-live-job partial unique index guards concurrent
+    dispatch). NEVER raises, and an LLM failure never quarantines a
+    document whose parse succeeded: the job row records the failure and
+    the document stays `done` at whatever depth it reached -- degraded,
+    logged, recorded, not dropped."""
+    settings = get_settings()
+    job = ExtractionJob(
+        document_id=document.id,
+        status="running",
+        model=settings.deepseek_model,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(job)
+    db.flush()
+    try:
+        outcome = run_extraction_sync(
+            db,
+            document,
+            tier1=get_tier1_adapter(settings),
+            tier2=get_tier2_adapter(settings),
+            settings=settings,
+        )
+    except Exception as exc:
+        db.rollback()  # discard the partial extraction, keep parse+tier-0
+        logger.exception("extraction_failed", document_id=str(document.id))
+        job = ExtractionJob(
+            document_id=document.id,
+            status="failed",
+            model=settings.deepseek_model,
+            started_at=datetime.now(timezone.utc),
+            finished_at=datetime.now(timezone.utc),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        db.add(job)
+        db.flush()
+        return None
+    job.status = "done"
+    job.finished_at = datetime.now(timezone.utc)
+    job.tier_path = outcome.tier_path
+    job.input_tokens = outcome.input_tokens
+    job.output_tokens = outcome.output_tokens
+    job.cached_input_tokens = outcome.cached_input_tokens
+    job.cost_usd = outcome.cost_usd
+    db.flush()
+    return outcome
+
+
+def _process_document(document_id: uuid.UUID, extraction_enabled: bool = False) -> _DocumentOutcome:
     """Parse one queued document end to end in its own session. NEVER
     raises: every failure path resolves to a quarantined/failed outcome so
     the coordinator's accounting always receives a terminal answer."""
@@ -541,6 +614,20 @@ def _process_document(document_id: uuid.UUID) -> _DocumentOutcome:
             _ingest_attachments(db, document, result, outcome)
 
             outcome.tier0_elements = _persist_tier0(db, document, persisted)
+
+            if extraction_enabled:
+                # Checkpoint parse + tier-0 first: the extraction stage
+                # rolls back ITS OWN partial work on failure, and that
+                # rollback must never be able to take the parse with it.
+                db.commit()
+                extraction = _run_extraction_stage(db, document)
+                if extraction is not None:
+                    ProcessingRepository(db).set_document_status(document, "extracted")
+                    outcome.extracted = True
+                    outcome.mentions = extraction.mentions
+                    outcome.llm_elements = extraction.llm_elements
+                    outcome.tier1_calls = extraction.tier1_calls
+                    outcome.tier2_calls = extraction.tier2_calls
 
             ProcessingRepository(db).set_document_status(document, "done")
             outcome.status = "done"
@@ -618,9 +705,22 @@ async def run_processing_run(run_id: uuid.UUID) -> None:
 
             semaphore = asyncio.Semaphore(max(1, settings.extraction_max_concurrency))
 
+            # Degrade-gracefully contract (plan §14b / this module's
+            # docstring): no DeepSeek key -> no extraction stage, logged
+            # exactly ONCE per run, documents finish at tier-0 depth.
+            extraction_enabled = bool(settings.deepseek_api_key)
+            if not extraction_enabled:
+                logger.info(
+                    "extraction_skipped",
+                    run_id=str(run_id),
+                    reason="no_deepseek_api_key",
+                )
+
             async def worker(document_id: uuid.UUID) -> _DocumentOutcome:
                 async with semaphore:
-                    return await asyncio.to_thread(_process_document, document_id)
+                    return await asyncio.to_thread(
+                        _process_document, document_id, extraction_enabled
+                    )
 
             pending = list(ingest.queued_ids)
             while pending:
@@ -635,6 +735,12 @@ async def run_processing_run(run_id: uuid.UUID) -> None:
                     counters["tier0_elements"] += outcome.tier0_elements
                     if outcome.ocr:
                         counters["ocr_documents"] += 1
+                    if outcome.extracted:
+                        counters["extracted"] += 1
+                    counters["mentions"] += outcome.mentions
+                    counters["llm_elements"] += outcome.llm_elements
+                    counters["tier1_calls"] += outcome.tier1_calls
+                    counters["tier2_calls"] += outcome.tier2_calls
                     counters["ingested"] += outcome.child_ingested
                     counters["attachments"] += outcome.child_ingested
                     counters["deduped"] += outcome.child_deduped

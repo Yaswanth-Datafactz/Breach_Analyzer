@@ -57,6 +57,23 @@ class Settings(BaseSettings):
     # runs 0.6, Config B "assurance" runs 0.8 -- both measured Friday.
     tier2_escalation_threshold: float = 0.8
 
+    # Tier-1 chunking (docs/plan.md §9: "~2-3K-token passage-aligned chunk";
+    # §14b: docx is 1 passage/paragraph, so the chunker aggregates). Token
+    # counts are estimated at ~4 chars/token -- an estimate is all routing
+    # needs, and a tokenizer dependency would buy false precision.
+    extraction_chunk_max_tokens: int = 3000
+
+    # Spreadsheet LLM sampling (docs/plan.md §9: deterministic header-mapping
+    # first; the LLM sees only unmapped/ambiguous columns + a sample of rows,
+    # so the 80-person sheet costs ~ one tier-1 call, not 80).
+    sheet_sample_rows: int = 5
+
+    # Vision escalation (docs/plan.md §9: low OCR confidence -> tier-2
+    # vision). §14b R1 measured the BulkSpreadsheet PNGs at ocr_mean_conf
+    # 51-57 with near-zero recovery -- 60 routes those to vision while
+    # healthy scans (tuned to 80-95% recovery) stay on the text path.
+    vision_ocr_conf_threshold: float = 60.0
+
     # ER band thresholds (docs/plan.md D5): >= auto_link merges by rule,
     # <= distinct stays separate, the gray zone in between goes to the
     # adjudicator agent. Calibrated against data/manifest.json Wed evening --
