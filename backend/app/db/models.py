@@ -105,7 +105,13 @@ class ProcessingRun(Base):
 class Document(Base):
     __tablename__ = "documents"
     __table_args__ = (
-        UniqueConstraint("sha256", name="uq_documents_sha256"),
+        # Per-run, not global (migration 002, docs/plan.md §14b R2): a global
+        # UNIQUE(sha256) deduped across runs, so re-processing a corpus (or a
+        # pytest fixture sharing bytes with a production file) shadowed or
+        # destroyed earlier runs' rows. Content-addressed byte storage still
+        # dedupes globally -- only the DB rows are per-run now; within-run
+        # dedup (same attachment on five emails) is unchanged.
+        UniqueConstraint("run_id", "sha256", name="uq_documents_run_id_sha256"),
         Index("ix_documents_run_id_status", "run_id", "status"),
         CheckConstraint(
             "file_class IN ('pdf_digital', 'pdf_scanned', 'docx', 'xlsx', 'csv', 'eml', 'msg', "

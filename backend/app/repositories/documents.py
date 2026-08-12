@@ -17,8 +17,13 @@ class DocumentRepository:
     def get(self, document_id: uuid.UUID) -> Document | None:
         return self.db.get(Document, document_id)
 
-    def get_by_sha256(self, sha256: str) -> Document | None:
-        return self.db.scalar(select(Document).where(Document.sha256 == sha256))
+    def get_by_sha256(self, sha256: str, *, run_id: uuid.UUID) -> Document | None:
+        """Dedup lookup, scoped to one run (migration 002 / docs/plan.md
+        §14b R2: sha256 is UNIQUE per run, not globally -- an ingest must
+        only dedup against its OWN run's rows, never another run's)."""
+        return self.db.scalar(
+            select(Document).where(Document.sha256 == sha256, Document.run_id == run_id)
+        )
 
     def create(
         self,

@@ -8,10 +8,13 @@ problem kind.
 
 DB-touching tests follow UC2's convention (see tests/test_models_smoke.py):
 they run against the real docker-compose Postgres on :5434 with migrations
-applied. Because documents.sha256 is globally UNIQUE, tests that ingest
-fixed-content fixtures first free any colliding rows left by earlier test
-sessions (`free_sha_collisions`) -- deleting by sha cascades passages/
-quarantines via the schema's ondelete rules.
+applied. Since migration 002, documents.sha256 is UNIQUE per run (not
+globally), so pytest ingests can never shadow production rows at the DB
+level; the remaining hygiene concerns are (a) fixture bytes must never
+EQUAL corpusgen output (docs/plan.md §14b R2 -- hence _FIXTURE_MARKER
+below) and (b) `free_sha_collisions` cleans matching rows left by earlier
+test sessions while explicitly refusing to touch rows belonging to runs
+over the repo's real data/ corpora.
 """
 
 from __future__ import annotations
@@ -23,12 +26,24 @@ import pikepdf
 import pytest
 from docx import Document as DocxDocument
 from openpyxl import Workbook
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.db.models import Document
+from app.db.models import Document, ProcessingRun
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+_REPO_DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+# Appended to every non-empty problem fixture (docs/plan.md §14b R2): a
+# trailing byte no corpusgen renderer ever emits, so fixture bytes can never
+# sha256-collide with production corpus files. Trailing junk is harmless to
+# every consumer here -- zip readers locate the end-of-central-directory by
+# scanning backwards, pikepdf tolerates bytes after %%EOF, and the junk
+# files are junk either way. The one file that CANNOT carry it is the
+# zero-byte fixture (appending anything would un-zero it); it is instead
+# protected by per-run dedup (migration 002) plus the data/-guard in
+# free_sha_collisions below.
+_FIXTURE_MARKER = b"\xa5"
 
 
 def build_password_pdf_bytes() -> bytes:
@@ -89,14 +104,16 @@ def build_eml_bytes(
 # docx, bytes disprove it).
 def _problem_file_builders() -> dict[str, bytes]:
     return {
-        "password_protected.pdf": build_password_pdf_bytes(),
-        "truncated.docx": build_docx_bytes(["This document will be cut off mid-zip."])[: 400],
-        "zero_byte.txt": b"",
-        "actually_xlsx.pdf": build_xlsx_bytes(["Name", "SSN"], [["Casey Vance", "531-24-8817"]]),
+        "password_protected.pdf": build_password_pdf_bytes() + _FIXTURE_MARKER,
+        "truncated.docx": build_docx_bytes(["This document will be cut off mid-zip."])[:400]
+        + _FIXTURE_MARKER,
+        "zero_byte.txt": b"",  # cannot carry the marker; see _FIXTURE_MARKER note
+        "actually_xlsx.pdf": build_xlsx_bytes(["Name", "SSN"], [["Casey Vance", "531-24-8817"]])
+        + _FIXTURE_MARKER,
         # Distinct byte patterns: identical content would sha256-dedup into
         # ONE documents row and break the per-file quarantine assertions.
-        "binary_junk.docx": b"\x00\xffJUNKDATA" * 64,
-        "noise.bin": b"\x01\xfeNOISEBIN" * 64,
+        "binary_junk.docx": b"\x00\xffJUNKDATA" * 64 + _FIXTURE_MARKER,
+        "noise.bin": b"\x01\xfeNOISEBIN" * 64 + _FIXTURE_MARKER,
     }
 
 
@@ -116,11 +133,22 @@ def problem_files() -> dict[str, Path]:
 
 def free_sha_collisions(db: Session, contents: list[bytes]) -> None:
     """Delete documents rows (cascading passages/quarantines) whose sha256
-    matches any of `contents` -- documents.sha256 is globally UNIQUE, so a
-    prior test session's rows would otherwise shadow this session's ingest
-    as dedup hits."""
+    matches any of `contents`, EXCEPT rows belonging to runs over the repo's
+    real data/ corpora. Since migration 002 (sha unique per run) this is
+    pure hygiene -- a prior pytest session's leftovers can no longer shadow
+    a new ingest -- but the guard is load-bearing: the zero-byte fixture
+    necessarily hashes identically to corpusgen's zero-byte problem file,
+    and the unguarded version of this function deleted the production run's
+    quarantined document (the docs/plan.md §14b R2 incident)."""
     from app.services.ingestion.inventory import sha256_of
 
     shas = [sha256_of(content) for content in contents]
-    db.execute(delete(Document).where(Document.sha256.in_(shas)))
+    protected_prefix = f"{_REPO_DATA_DIR}%"
+    doomed = select(Document.id).join(
+        ProcessingRun, Document.run_id == ProcessingRun.id
+    ).where(
+        Document.sha256.in_(shas),
+        ProcessingRun.config_snapshot["corpus_path"].astext.not_like(protected_prefix),
+    )
+    db.execute(delete(Document).where(Document.id.in_(doomed)))
     db.commit()

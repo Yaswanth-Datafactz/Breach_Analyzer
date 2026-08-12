@@ -35,6 +35,15 @@ VALID = "valid"
 INVALID_CHECKSUM = "invalid_checksum"
 FORMAT_ONLY = "format_only"
 
+# The element types status_for() can return a real verdict for -- for these
+# `valid` is attainable and anything else means the value failed (or was
+# trap-downgraded). For every OTHER type FORMAT_ONLY is the best possible
+# status ("no computable check exists", this module's docstring), NOT a
+# failure: consumers deciding usability (exposure evidence, ER identifier
+# gates) must require `valid` only for these types and accept a plain
+# format_only (trap_reason=None) for the rest.
+VERDICT_TYPES = frozenset({"ssn", "credit_card", "phone", "email"})
+
 _EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$")
 
 
