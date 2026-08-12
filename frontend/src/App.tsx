@@ -6,6 +6,7 @@ import { ExposurePage } from './pages/Exposure'
 import { PersonDetailPage } from './pages/PersonDetail'
 import { ReviewPage } from './pages/Review'
 import { AgentsPage } from './pages/Agents'
+import { AgentRunDetailPage } from './pages/AgentRunDetail'
 
 /** The one place this use case wires its own nav/branding/page-title into
  * the shared AppShell (docs/plan.md D7) -- AppShell, Sidebar, TopBar, and
@@ -36,7 +37,7 @@ function App() {
           <Route path="/persons/:personId" element={<PersonDetailPage />} />
           <Route path="/review" element={<ReviewPage />} />
           <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/runs/:agentRunId" element={<AgentsPage />} />
+          <Route path="/agents/runs/:agentRunId" element={<AgentRunDetailPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

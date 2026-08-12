@@ -31,14 +31,14 @@ export type PiiCategory =
   | 'phone'
   | 'email'
 
-export type FlagReviewStatus = 'auto' | 'human_confirmed' | 'human_overridden'
-
 export interface PageOut<T> {
   items: T[]
   total: number
   limit: number
   offset: number
 }
+
+// --- runs (schemas/run.py) --------------------------------------------------
 
 export interface Run {
   id: string
@@ -50,9 +50,11 @@ export interface Run {
   created_at: string
 }
 
-export interface DocumentSummary {
+// --- documents & passages (schemas/document.py, schemas/passage.py) ---------
+
+export interface DocumentOut {
   id: string
-  sha256: string
+  run_id: string
   original_filename: string
   rel_path: string
   declared_mime: string | null
@@ -76,64 +78,175 @@ export interface Passage {
   text: string
   ocr: boolean
   page_image_sha: string | null
+  created_at: string
 }
+
+// --- quarantines (schemas/quarantine.py) ------------------------------------
+
+export interface Quarantine {
+  id: string
+  document_id: string
+  document_filename: string
+  document_rel_path: string
+  stage: string
+  reason_code: string
+  detail: string | null
+  status: string
+  created_at: string
+}
+
+// --- exposure & persons (schemas/exposure.py) --------------------------------
 
 export interface PersonAlias {
   name: string
-  kind: 'nickname' | 'maiden' | 'initials' | 'misspelling' | 'order_variant'
+  kind: 'nickname' | 'maiden' | 'initials' | 'misspelling' | 'order_variant' | string
 }
 
-export interface ExposureFlag {
-  category: PiiCategory
+export interface FlagOut {
+  id: string
+  category: PiiCategory | string
   exposed: boolean
   confidence: number | null
-  review_status: FlagReviewStatus
+  review_status: string
   evidence_count: number
 }
 
-export interface ExposureRow {
-  person_id: string
+export interface PersonSummary {
+  id: string
+  run_id: string
   best_name: string
   aliases: PersonAlias[]
   dob: string | null
-  flags: ExposureFlag[]
-  document_count: number
-  mention_count: number
   er_confidence: number | null
   review_status: string
+  mention_count: number
+  document_count: number
+  flags: FlagOut[]
 }
 
-export interface FlagEvidence {
+export interface ExposurePage extends PageOut<PersonSummary> {
+  run_id: string
+}
+
+export interface EvidenceRef {
+  id: string
   pii_element_id: string
+  element_type: string
   document_id: string
+  document_filename: string | null
   passage_id: string
-  snippet: string
+  snippet: string | null
+  char_start: number | null
+  char_end: number | null
+  detector: string | null
+  validation_status: string | null
+}
+
+export interface FlagDetail extends FlagOut {
+  evidence: EvidenceRef[]
 }
 
 export interface IdentityLink {
+  id: string
   mention_id: string
+  mention_name_raw: string | null
+  document_filename: string | null
   score: number | null
-  method: 'rule' | 'agent' | 'reviewer'
+  method: 'rule' | 'agent' | 'reviewer' | string
   rule_id: string | null
   rationale: string | null
-  agent_run_id: string | null
   active: boolean
+  created_at: string
 }
 
-export interface PersonDetail extends ExposureRow {
-  evidence: Record<string, FlagEvidence[]>
-  links: IdentityLink[]
+export interface PersonDetail {
+  id: string
+  run_id: string
+  best_name: string
+  aliases: PersonAlias[]
+  dob: string | null
+  er_confidence: number | null
+  review_status: string
+  mention_count: number
+  document_count: number
+  flags: FlagDetail[]
+  identity_links: IdentityLink[]
+}
+
+// --- review (schemas/review.py + services/review.py resolved payloads) -------
+
+/** services/review.py `_element_card` -- the extraction queue's card. */
+export interface ReviewElementCard {
+  pii_element_id: string
+  element_type: string
+  value_raw: string
+  validation_status: string
+  detector: string | null
+  confidence: number | null
+  document_id: string
+  document_filename: string | null
+  passage_id: string
+  char_start: number | null
+  char_end: number | null
+  snippet: string | null
+  signals: Record<string, unknown> | null
+}
+
+/** services/review.py `_mention_card` -- one side of an ER pair. */
+export interface ReviewMentionCard {
+  mention_id: string
+  name_raw: string
+  dob: string | null
+  document_id: string
+  document_filename: string | null
+  passage_id: string
+  person_id: string | null
+  features: Record<string, unknown> | null
+  elements: Array<{
+    pii_element_id: string
+    element_type: string
+    value_raw: string
+    validation_status: string
+    char_start: number | null
+    char_end: number | null
+  }>
 }
 
 export interface ReviewItem {
   id: string
   kind: 'extraction' | 'er_pair' | 'flag_audit'
   ref: Record<string, unknown>
-  reason: string
+  reason: string | null
   priority: number
-  status: string
+  status: 'open' | 'decided' | 'dismissed' | string
   created_at: string
+  resolved: {
+    element?: ReviewElementCard | null
+    score?: number | null
+    left?: ReviewMentionCard | null
+    right?: ReviewMentionCard | null
+    ref?: Record<string, unknown>
+  }
 }
+
+export type ReviewDecision =
+  | 'correct'
+  | 'attach'
+  | 'dismiss'
+  | 'merge'
+  | 'keep_separate'
+  | 'confirm'
+  | 'override'
+
+export interface ReviewDecisionOut {
+  review_item_id: string
+  decision: string
+  status: string
+  recomputed_person_ids: string[]
+  detail: Record<string, unknown>
+}
+
+// --- agents (schemas/agent.py) -----------------------------------------------
 
 export type AgentKind = 'orchestrator' | 'investigator' | 'adjudicator' | 'auditor'
 
@@ -149,56 +262,105 @@ export interface AgentRun {
   id: string
   agent_kind: AgentKind
   trigger: Record<string, unknown>
-  model: string
+  model: string | null
   status: AgentRunStatus
-  budget_max_steps: number
+  budget_max_steps: number | null
   budget_max_tokens: number | null
-  budget_max_usd: number
+  budget_max_usd: number | null
   steps_used: number
   tokens_in: number
   tokens_out: number
   cost_usd: number
   outcome: Record<string, unknown> | null
   created_at: string
+  updated_at: string
 }
 
 export interface AgentToolCall {
+  id: string
   tool_name: string
   args: Record<string, unknown>
   result_summary: Record<string, unknown> | null
   is_error: boolean
   latency_ms: number | null
+  created_at: string
 }
 
 export interface AgentStep {
   id: string
-  agent_run_id: string
   step_no: number
   request_summary: Record<string, unknown> | null
   response_summary: Record<string, unknown> | null
   stop_reason: string | null
-  tokens: number | null
+  tokens_in: number | null
+  tokens_out: number | null
   latency_ms: number | null
   cost_usd: number | null
+  created_at: string
   tool_calls: AgentToolCall[]
 }
 
-export interface CostBreakdownRow {
+export interface AgentBudget {
+  max_steps: number | null
+  max_tokens: number | null
+  max_usd: number | null
+  steps_used: number
+  tokens_used: number
+  cost_usd: number
+}
+
+export interface AgentRunDetail extends AgentRun {
+  steps: AgentStep[]
+  budget: AgentBudget
+}
+
+export interface Approval {
+  id: string
+  agent_run_id: string
+  action_type: 'bulk_merge' | 'final_signoff' | 'class_pause' | string
+  payload: Record<string, unknown>
+  status: 'pending' | 'approved' | 'rejected' | string
+  decided_by: string | null
+  decided_at: string | null
+  created_at: string
+}
+
+export interface ApprovalDecisionOut {
+  approval: Approval
+  run_status: string
+  resumed: boolean
+}
+
+// --- costs (schemas/cost.py) --------------------------------------------------
+
+export interface CostSummaryRow {
   purpose: string
+  tier: string
   model: string
   calls: number
   input_tokens: number
   output_tokens: number
-  cached_tokens: number
+  cached_input_tokens: number
+  cache_hit_rate: number
+  cost_usd: number
+}
+
+export interface CostTotals {
+  calls: number
+  input_tokens: number
+  output_tokens: number
+  cached_input_tokens: number
+  cache_hit_rate: number
   cost_usd: number
 }
 
 export interface CostSummary {
   run_id: string
-  total_cost_usd: number
-  cost_per_document_usd: number | null
-  by_purpose: CostBreakdownRow[]
+  rows: CostSummaryRow[]
+  totals: CostTotals
 }
+
+// --- accuracy (router mounted empty until the eval phase lands) ---------------
 
 export interface AccuracyRun {
   id: string
