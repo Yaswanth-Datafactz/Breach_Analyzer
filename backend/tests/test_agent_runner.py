@@ -103,7 +103,12 @@ def test_investigator_full_loop_resolves_quarantine(db, env):
     assert env.quarantine.status == "agent_resolved"
     assert env.quarantine.resolved_by_agent_run_id == run.id
     db.refresh(env.doc_q)
-    assert env.doc_q.status == "queued"
+    # resolve_quarantine reprocesses synchronously through the full agent
+    # loop too (docs/plan.md §14b SUSPICIOUS 4 fix): the corrected xlsx
+    # route genuinely parses, landing 'done' rather than a non-terminal
+    # 'queued' status nothing in this system ever picks back up.
+    assert env.doc_q.status == "done"
+    assert run.outcome["resolution"]["reprocessed_status"] == "done"
 
     steps = _steps(db, run.id)
     assert [s.step_no for s in steps] == [1, 2, 3, 4]

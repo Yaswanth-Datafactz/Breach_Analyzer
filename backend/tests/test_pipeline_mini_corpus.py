@@ -23,10 +23,10 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.db.models import Document, ProcessingRun, Quarantine
+from app.db.models import Document, Quarantine
 from app.db.session import SessionLocal
 from app.main import app
 from app.repositories.runs import ProcessingRunRepository
@@ -45,19 +45,19 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def mini_run_id():
     """Run the pipeline over the mini corpus once for the whole module.
-    Prior runs over the same corpus are deleted first (documents.sha256 is
-    globally UNIQUE -- their rows would shadow this ingest as dedup hits);
-    the delete cascades documents/passages/quarantines via the schema's
-    ondelete rules."""
+
+    Prior runs over this corpus are left alone: migration 002 scopes
+    documents.sha256 uniqueness per-run, so a fresh ingest can no longer be
+    shadowed by (or shadow) an earlier run's rows -- including demo/seed
+    data a live session may have built on top of a corpus-mini run. This
+    fixture used to delete every prior ProcessingRun over data/corpus-mini
+    before re-ingesting; that silently destroyed demo state (docs/plan.md
+    §14b SUSPICIOUS 1) and is no longer necessary post-002. Only
+    free_sha_collisions runs, to clear any *fixture-bytes* collision under
+    a non-protected (non data/) corpus_path -- it is a no-op against real
+    corpus-mini/corpus runs by construction."""
     db = SessionLocal()
     try:
-        db.execute(
-            delete(ProcessingRun).where(
-                ProcessingRun.config_snapshot["corpus_path"].astext == str(CORPUS_DIR)
-            )
-        )
-        # Any stray rows holding this corpus's hashes under a DIFFERENT
-        # corpus_path (e.g. a copied corpus) would still collide.
         from tests.conftest import free_sha_collisions
 
         free_sha_collisions(db, [p.read_bytes() for p in sorted(CORPUS_DIR.iterdir()) if p.is_file()])

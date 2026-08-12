@@ -28,3 +28,6 @@ frontend/dist/
 # OS / editor
 .DS_Store
 .idea/
+# Generated fresh by conftest.py every test session (uuid/random-embedded bytes) --
+# tracking them just produces diff noise on every run.
+backend/tests/fixtures/

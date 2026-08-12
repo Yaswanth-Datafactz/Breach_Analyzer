@@ -721,35 +721,30 @@ def _resolve_quarantine(db: Session, args: ResolveQuarantineArgs, ctx: ToolConte
     }
     if args.corrected_file_class is not None:
         document.file_class = args.corrected_file_class
-    requeued_via = _requeue_document(db, document)
-    db.flush()
+    db.flush()  # correction visible to the reprocessing pass below
+    reprocessed_status = _requeue_document(db, document)
     ctx.resolution = {
         "quarantine_id": str(quarantine.id),
         "document_id": str(document.id),
         "resolution": args.resolution,
         "corrected_file_class": args.corrected_file_class,
-        "requeued_via": requeued_via,
+        "reprocessed_status": reprocessed_status,
     }
     return ToolResult(payload=dict(ctx.resolution, status="agent_resolved"))
 
 
 def _requeue_document(db: Session, document: Document) -> str:
-    """Re-enqueue through the pipeline's requeue hook when it exists;
-    otherwise flip the document back to 'queued' so the next pipeline pass
-    picks it up. Duck-typed on purpose: the hook lands with B2's pipeline
-    work and this module must not depend on its exact arrival."""
-    from app.services import pipeline
+    """Re-run the document through the pipeline's requeue_document() in
+    THIS session (docs/plan.md §14b SUSPICIOUS 4): synchronous and
+    terminal by construction, so a resolved quarantine never leaves a
+    document dangling in a non-terminal status with nothing to pick it
+    back up. Returns the outcome status ('done' or 'quarantined' again --
+    the investigator's own resolution can itself fail to fix the file,
+    which is a legitimate outcome, not a tool error)."""
+    from app.services.pipeline import requeue_document
 
-    hook = getattr(pipeline, "requeue_document", None)
-    if callable(hook):
-        try:
-            hook(db, document.id)
-            return "pipeline.requeue_document"
-        except TypeError:
-            hook(document.id)
-            return "pipeline.requeue_document"
-    document.status = "queued"
-    return "status_queued_fallback"
+    outcome = requeue_document(db, document.id)
+    return outcome.status
 
 
 class EscalateArgs(BaseModel):

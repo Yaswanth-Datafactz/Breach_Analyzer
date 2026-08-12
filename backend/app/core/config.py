@@ -76,10 +76,14 @@ class Settings(BaseSettings):
 
     # ER band thresholds (docs/plan.md D5): >= auto_link merges by rule,
     # <= distinct stays separate, the gray zone in between goes to the
-    # adjudicator agent. Calibrated against data/manifest.json Wed evening --
-    # provisional until then, same lifecycle as UC2's review thresholds.
+    # adjudicator agent. Calibrated against the FULL data/manifest.json via
+    # scripts/calibrate_er.py: (0.85, 0.40) matches (0.85, 0.45)'s F1=0.973
+    # and zero shared-name leakage at every threshold tested, but queues 5
+    # more true gray pairs (36 vs 31) for the adjudicator -- ~$1.50 extra
+    # at the $0.30/pair budget for a higher achievable recall ceiling
+    # (0.963 -> 0.965). Applied 2026-08-12; rerun after any corpus change.
     er_auto_link_threshold: float = 0.85
-    er_distinct_threshold: float = 0.45
+    er_distinct_threshold: float = 0.40
 
     # Agent budget defaults (docs/plan.md §3's table -- steps / tokens / USD
     # checked between turns by services/agents/runner.py; exceeding any parks

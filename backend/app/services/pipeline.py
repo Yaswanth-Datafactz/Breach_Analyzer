@@ -559,112 +559,148 @@ def _run_extraction_stage(db: Session, document: Document) -> ExtractionOutcome 
 def _process_document(document_id: uuid.UUID, extraction_enabled: bool = False) -> _DocumentOutcome:
     """Parse one queued document end to end in its own session. NEVER
     raises: every failure path resolves to a quarantined/failed outcome so
-    the coordinator's accounting always receives a terminal answer."""
-    outcome = _DocumentOutcome(document_id=document_id, status="failed")
+    the coordinator's accounting always receives a terminal answer. Thin
+    wrapper around _process_one -- see that function for the actual work;
+    this one only owns session lifecycle for the coordinator's thread pool."""
     db = SessionLocal()
     try:
         document = db.get(Document, document_id)
         if document is None:  # pragma: no cover - coordinator only sends real ids
             logger.error("process_document_missing", document_id=str(document_id))
-            return outcome
-
-        try:
-            parser_id = classify.PARSER_BY_CLASS[document.file_class]
-            content = storage.original_path(
-                document.sha256, Path(document.original_filename).suffix
-            ).read_bytes()
-            result = _run_parser(parser_id, content, document.sha256)
-
-            garbage_detail = _ocr_garbage_detail(result)
-            if garbage_detail is not None:
-                _quarantine_document(
-                    db, document, reason_code="ocr_garbage", detail=garbage_detail
-                )
-                outcome.status = "quarantined"
-                db.commit()
-                return outcome
-
-            passage_repo = PassageRepository(db)
-            persisted = [
-                passage_repo.create(
-                    document_id=document.id,
-                    seq=seq,
-                    kind=parsed.kind,
-                    locator=parsed.locator,
-                    text=parsed.text,
-                    ocr=parsed.ocr,
-                    page_image_sha=parsed.page_image_sha,
-                )
-                for seq, parsed in enumerate(result.passages)
-            ]
-            outcome.passages = len(persisted)
-            outcome.ocr = any(p.ocr for p in result.passages)
-
-            file_class = None
-            if document.file_class == "pdf_digital" and result.is_image_based:
-                file_class = "pdf_scanned"
-            ProcessingRepository(db).set_document_status(
-                document,
-                "parsed",
-                page_count=result.page_count,
-                is_image_based=result.is_image_based,
-                file_class=file_class,
-            )
-
-            _ingest_attachments(db, document, result, outcome)
-
-            outcome.tier0_elements = _persist_tier0(db, document, persisted)
-
-            if extraction_enabled:
-                # Checkpoint parse + tier-0 first: the extraction stage
-                # rolls back ITS OWN partial work on failure, and that
-                # rollback must never be able to take the parse with it.
-                db.commit()
-                extraction = _run_extraction_stage(db, document)
-                if extraction is not None:
-                    ProcessingRepository(db).set_document_status(document, "extracted")
-                    outcome.extracted = True
-                    outcome.mentions = extraction.mentions
-                    outcome.llm_elements = extraction.llm_elements
-                    outcome.tier1_calls = extraction.tier1_calls
-                    outcome.tier2_calls = extraction.tier2_calls
-
-            ProcessingRepository(db).set_document_status(document, "done")
-            outcome.status = "done"
-            db.commit()
-            return outcome
-
-        except _CORRUPT_EXCEPTIONS as exc:
-            db.rollback()
-            _quarantine_document(
-                db, document, reason_code="corrupt", detail=f"{type(exc).__name__}: {exc}"
-            )
-            outcome.status = "quarantined"
-            db.commit()
-            return outcome
-        except Exception as exc:
-            db.rollback()
-            logger.exception(
-                "parse_failed", document_id=str(document_id), rel_path=document.rel_path
-            )
-            _quarantine_document(
-                db,
-                document,
-                reason_code="parser_error",
-                detail=f"{type(exc).__name__}: {exc}",
-            )
-            outcome.status = "quarantined"
-            db.commit()
-            return outcome
+            return _DocumentOutcome(document_id=document_id, status="failed")
+        return _process_one(db, document, extraction_enabled)
     except Exception:
         # Even the failure handling failed (DB down mid-run, ...) -- the
         # outcome stays 'failed'; the coordinator logs and counts it, and
         # the reconciliation gate query will surface the document.
         db.rollback()
         logger.exception("process_document_unrecoverable", document_id=str(document_id))
-        return outcome
+        return _DocumentOutcome(document_id=document_id, status="failed")
     finally:
         db.close()
+
+
+def _process_one(
+    db: Session, document: Document, extraction_enabled: bool
+) -> _DocumentOutcome:
+    """Parse (+tier-0, +extraction if enabled) one document against the
+    GIVEN session, committing at the same checkpoints _process_document
+    always has. NEVER raises internally: every failure path resolves to a
+    quarantined outcome, same terminal-status guarantee either caller gets.
+
+    Split out of _process_document so requeue_document() below -- called
+    from the exception investigator's resolve_quarantine tool -- can drive
+    that exact guarantee inside a session the caller already holds (so an
+    uncommitted file_class correction on `document` is visible to this
+    reprocessing pass). An investigator resolution must never leave a
+    document sitting in a non-terminal status with nothing to pick it back
+    up (docs/plan.md §14b SUSPICIOUS 4)."""
+    outcome = _DocumentOutcome(document_id=document.id, status="failed")
+    try:
+        parser_id = classify.PARSER_BY_CLASS[document.file_class]
+        content = storage.original_path(
+            document.sha256, Path(document.original_filename).suffix
+        ).read_bytes()
+        result = _run_parser(parser_id, content, document.sha256)
+
+        garbage_detail = _ocr_garbage_detail(result)
+        if garbage_detail is not None:
+            _quarantine_document(
+                db, document, reason_code="ocr_garbage", detail=garbage_detail
+            )
+            outcome.status = "quarantined"
+            db.commit()
+            return outcome
+
+        passage_repo = PassageRepository(db)
+        persisted = [
+            passage_repo.create(
+                document_id=document.id,
+                seq=seq,
+                kind=parsed.kind,
+                locator=parsed.locator,
+                text=parsed.text,
+                ocr=parsed.ocr,
+                page_image_sha=parsed.page_image_sha,
+            )
+            for seq, parsed in enumerate(result.passages)
+        ]
+        outcome.passages = len(persisted)
+        outcome.ocr = any(p.ocr for p in result.passages)
+
+        file_class = None
+        if document.file_class == "pdf_digital" and result.is_image_based:
+            file_class = "pdf_scanned"
+        ProcessingRepository(db).set_document_status(
+            document,
+            "parsed",
+            page_count=result.page_count,
+            is_image_based=result.is_image_based,
+            file_class=file_class,
+        )
+
+        _ingest_attachments(db, document, result, outcome)
+
+        outcome.tier0_elements = _persist_tier0(db, document, persisted)
+
+        if extraction_enabled:
+            # Checkpoint parse + tier-0 first: the extraction stage
+            # rolls back ITS OWN partial work on failure, and that
+            # rollback must never be able to take the parse with it.
+            db.commit()
+            extraction = _run_extraction_stage(db, document)
+            if extraction is not None:
+                ProcessingRepository(db).set_document_status(document, "extracted")
+                outcome.extracted = True
+                outcome.mentions = extraction.mentions
+                outcome.llm_elements = extraction.llm_elements
+                outcome.tier1_calls = extraction.tier1_calls
+                outcome.tier2_calls = extraction.tier2_calls
+
+        ProcessingRepository(db).set_document_status(document, "done")
+        outcome.status = "done"
+        db.commit()
+        return outcome
+
+    except _CORRUPT_EXCEPTIONS as exc:
+        db.rollback()
+        _quarantine_document(
+            db, document, reason_code="corrupt", detail=f"{type(exc).__name__}: {exc}"
+        )
+        outcome.status = "quarantined"
+        db.commit()
+        return outcome
+    except Exception as exc:
+        db.rollback()
+        logger.exception(
+            "parse_failed", document_id=str(document.id), rel_path=document.rel_path
+        )
+        _quarantine_document(
+            db,
+            document,
+            reason_code="parser_error",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+        outcome.status = "quarantined"
+        db.commit()
+        return outcome
+
+
+def requeue_document(db: Session, document_id: uuid.UUID) -> _DocumentOutcome:
+    """Re-run one document through parse (+tier-0, +extraction when a
+    DeepSeek key is configured) against the CALLER's session. The exception
+    investigator's resolve_quarantine tool (services/agents/tools.py) calls
+    this after applying a corrected file_class or diagnosing a fixable
+    parser issue. Synchronous and terminal by construction: by the time
+    this returns the document is 'done' or freshly 'quarantined' -- never
+    left dangling in a non-terminal status the way a bare
+    status='queued' fallback would be, since nothing in this system polls
+    for queued documents outside an active processing run."""
+    document = db.get(Document, document_id)
+    if document is None:
+        raise ValueError(f"document {document_id} not found")
+    extraction_enabled = bool(get_settings().deepseek_api_key)
+    return _process_one(db, document, extraction_enabled)
 
 
 # ---------------------------------------------------------------------------

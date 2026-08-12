@@ -14,7 +14,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.db.models import ApprovalRequest, ErDecision, IdentityLink, ReviewItem
+from app.db.models import ApprovalRequest, ErDecision, IdentityLink, Passage, ReviewItem
 from app.db.session import SessionLocal
 from app.repositories.agent_runs import AgentRunRepository
 from app.services.agents.tools import (
@@ -336,7 +336,13 @@ def test_resolve_quarantine_reroutes_and_requeues(db, env):
     assert env.quarantine.status == "agent_resolved"
     assert env.quarantine.resolution["corrected_file_class"] == "xlsx"
     assert env.doc_q.file_class == "xlsx"
-    assert env.doc_q.status == "queued"  # re-enqueued for the pipeline
+    # resolve_quarantine reprocesses synchronously (docs/plan.md §14b
+    # SUSPICIOUS 4 fix) -- the bytes really are a valid xlsx, so the
+    # corrected re-route genuinely succeeds all the way to 'done', not
+    # left dangling in a non-terminal status for nothing to pick up.
+    assert env.doc_q.status == "done"
+    assert result.payload["reprocessed_status"] == "done"
+    assert db.query(Passage).filter(Passage.document_id == env.doc_q.id).count() > 0
     # already-resolved quarantines refuse a second resolution
     again = run_tool(
         db,
