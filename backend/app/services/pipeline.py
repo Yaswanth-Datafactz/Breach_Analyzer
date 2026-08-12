@@ -13,7 +13,19 @@ DEEPSEEK_API_KEY configured the stage is skipped -- logged once per run --
 and documents finish `done` at tier-0 depth, so frontend/dev data keeps
 working and the live keyed run later is config-only. Each extracted
 document gets an extraction_jobs row (status/tier_path/token+cost rollups;
-the one-live-job partial unique index guards double-dispatch).
+the one-live-job partial unique index guards double-dispatch). Once the
+per-document loop is fully drained, the coordinator resolves ER + exposure
+ONCE for the whole run (services/er/persist.py's run_er_stage, then
+services/exposure.py's compute_exposure) before marking the run finished --
+docs/plan.md §14c's gap: "start a run" now means the whole pipeline, not
+four manual steps. Both stages are proven idempotent over zero mentions, so
+this fires unconditionally -- keyless (tier-0-only) runs included -- and
+writes explicit `persons`/`flags`/`gray_pairs` = 0 rather than omitting the
+keys, so a zero-mention run reads as "ran, found nothing" and never as
+"never ran". A failure in this stage is caught, logged, and recorded as an
+`er_exposure_status`/`er_exposure_error` note on the run's counters instead
+of failing an otherwise-successful parse+extraction run (same discipline as
+every other stage below).
 
 Failure semantics ("nothing silently dropped", CLAUDE.md):
 - No exception ever escapes a single document. Known file-is-broken
@@ -56,13 +68,15 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.models import Document, ExtractionJob
+from app.db.models import Document, ExtractionJob, ProcessingRun
 from app.db.session import SessionLocal
 from app.repositories.documents import DocumentRepository
 from app.repositories.passages import PassageRepository
 from app.repositories.pii_elements import PiiElementRepository
 from app.repositories.processing import ProcessingRepository
 from app.repositories.quarantines import QuarantineRepository
+from app.services.er.persist import run_er_stage
+from app.services.exposure import compute_exposure
 from app.services.extraction import get_tier1_adapter, get_tier2_adapter
 from app.services.extraction.service import ExtractionOutcome, run_extraction_sync
 from app.services.ingestion import classify
@@ -135,6 +149,13 @@ _COUNTER_KEYS = (
     "llm_elements",
     "tier1_calls",
     "tier2_calls",
+    # ER + exposure stage (docs/plan.md §14c gap): runs once, after the
+    # per-document loop, regardless of whether extraction ran -- explicit
+    # 0s here (not omitted keys) so a keyless run's Dashboard numbers read
+    # as "ran, found nothing" rather than "never ran".
+    "persons",
+    "flags",
+    "gray_pairs",
 )
 
 
@@ -708,6 +729,69 @@ def requeue_document(db: Session, document_id: uuid.UUID) -> _DocumentOutcome:
 # ---------------------------------------------------------------------------
 
 
+def _run_er_and_exposure_stage(
+    db: Session,
+    processing: ProcessingRepository,
+    run: ProcessingRun,
+    run_id: uuid.UUID,
+    counters: dict,
+) -> None:
+    """ER + exposure, once, for the whole run (docs/plan.md §14c gap) --
+    called after the per-document loop drains, before the run is marked
+    finished. Both run_er_stage (services/er/persist.py) and
+    compute_exposure (services/exposure.py) are proven idempotent over zero
+    mentions (their own docstrings), so this fires unconditionally --
+    keyless (tier-0-only) runs included -- and writes explicit
+    persons=flags=gray_pairs=0 (the keys are already pre-zeroed by
+    _COUNTER_KEYS) rather than skipping the stage: POST /runs is uniformly
+    "the whole pipeline" whether or not extraction ran, and a zero-mention
+    run reads as "ran, found nothing", never as "never ran".
+
+    Runs synchronously on the coordinator's own session (deliberate: both
+    stages are pure DB arithmetic over a run's already-committed rows, no
+    OCR/LLM/CPU-heavy work, and running them here -- after the last
+    per-document worker thread has already joined -- avoids handing the
+    coordinator's session across a thread boundary for the sake of a call
+    that, measured, is a small fraction of this same run's own ingest+parse
+    wall time).
+
+    Mutates `counters` in place and commits. NEVER raises: an ER/exposure
+    failure is caught, logged, and recorded on the run's counters
+    (`er_exposure_status`/`er_exposure_error`) instead of failing an
+    otherwise-successful parse+extraction run -- the same
+    never-let-exception-escape discipline the rest of this module uses.
+    `counters["persons"/"flags"/"gray_pairs"]` are assigned only after BOTH
+    calls succeed (the try/else below), so a failure can never leave the
+    dict holding values that the DB rollback just discarded."""
+    try:
+        er_result = run_er_stage(db, run_id)
+        exposure_result = compute_exposure(db, run_id)
+    except Exception as exc:
+        db.rollback()
+        logger.exception("run_er_exposure_failed", run_id=str(run_id))
+        counters["er_exposure_status"] = "failed"
+        counters["er_exposure_error"] = f"{type(exc).__name__}: {exc}"[:500]
+        processing.set_counters(run, counters)
+        db.commit()
+    else:
+        counters["persons"] = er_result.persons
+        counters["flags"] = exposure_result.flags
+        counters["gray_pairs"] = er_result.gray_items
+        counters["er_exposure_status"] = "ok"
+        processing.set_counters(run, counters)
+        db.commit()
+        logger.info(
+            "run_er_exposure_finished",
+            run_id=str(run_id),
+            mentions=er_result.mentions,
+            persons=er_result.persons,
+            identity_links=er_result.identity_links,
+            gray_items=er_result.gray_items,
+            flags=exposure_result.flags,
+            evidence=exposure_result.evidence,
+        )
+
+
 async def run_processing_run(run_id: uuid.UUID) -> None:
     """The background task POST /runs dispatches. Owns run status +
     counters; never raises (a run-level failure marks the run `failed`)."""
@@ -786,6 +870,8 @@ async def run_processing_run(run_id: uuid.UUID) -> None:
                     # Children queue behind the current batch -- recursion
                     # terminates because every level ingests new sha256s only.
                     pending.extend(outcome.child_queued_ids)
+
+            _run_er_and_exposure_stage(db, processing, run, run_id, counters)
 
             processing.mark_run_finished(run, status="finished")
             db.commit()

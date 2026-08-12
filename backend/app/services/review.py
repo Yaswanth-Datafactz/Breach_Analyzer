@@ -423,6 +423,20 @@ def _apply_er_decision(
         rationale=notes or f"reviewer {reviewer}: {decision}",
     )
     db.flush()
+
+    # docs/plan.md §14c SUSPICIOUS 5a: this decision may have made OTHER
+    # open er_pair items moot (their mentions now share a cluster, or the
+    # pair itself is a live hard conflict) -- close them so the adjudicator
+    # never re-spends budget on a pair already settled here. Exclude THIS
+    # item: it is still 'open' at this point (the caller flips it to
+    # 'decided' right after this function returns) and must get the real
+    # decision recorded below, not get raced into 'dismissed' first.
+    from app.services.er.persist import close_superseded_er_pairs
+
+    superseded = close_superseded_er_pairs(db, run_id, exclude_item_id=item.id)
+    if superseded:
+        detail["superseded_items"] = superseded
+
     recomputed = sorted(affected)
     recompute_for_persons(db, run_id, recomputed)
     return DecisionOutcome(

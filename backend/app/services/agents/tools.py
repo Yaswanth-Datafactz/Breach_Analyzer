@@ -63,7 +63,6 @@ from app.repositories.identity_links import IdentityLinkRepository
 from app.repositories.persons import PersonRepository
 from app.repositories.review import ReviewRepository
 from app.services.er.features import PairFeatures, compute_features
-from app.services.er.normalize import build_mention
 from app.services.er.scoring import ScoredPair, score_pair
 from app.services.ingestion import classify
 from app.services.ingestion.inventory import sniff_mime
@@ -259,28 +258,15 @@ def _run_named_parser(parser: str, content: bytes, sha256: str):
 def _er_mention(db: Session, mention: Mention):
     """Mention row + its attached pii_elements -> the normalized ErMention
     the pure ER functions consume, under the SAME element-admission rule as
-    the production stage (er/persist._usable_element) -- the adjudicator
-    must score with production arithmetic over production evidence, and an
-    ungated load would let a trap-downgraded or checksum-invalid value
-    fabricate a hard conflict (or a merge bridge) the pipeline never saw."""
-    from app.services.er.persist import _usable_element
+    the production stage -- the adjudicator must score with production
+    arithmetic over production evidence, and an ungated load would let a
+    trap-downgraded or checksum-invalid value fabricate a hard conflict (or
+    a merge bridge) the pipeline never saw. Delegates to
+    services/er/persist.py's er_mention_from_row so this rule is defined
+    exactly once."""
+    from app.services.er.persist import er_mention_from_row
 
-    elements = (
-        db.execute(select(PiiElement).where(PiiElement.mention_id == mention.id))
-        .scalars()
-        .all()
-    )
-    return build_mention(
-        str(mention.id),
-        str(mention.document_id),
-        name_raw=mention.name_raw,
-        dob_raw=mention.dob.isoformat() if mention.dob else None,
-        elements=[
-            (e.element_type, e.value_raw)
-            for e in elements
-            if _usable_element(e.validation_status, e.element_type, e.signals)
-        ],
-    )
+    return er_mention_from_row(db, mention)
 
 
 def _active_link(db: Session, mention_id: uuid.UUID) -> IdentityLink | None:
@@ -1021,18 +1007,47 @@ def _decide(db: Session, args: DecideArgs, ctx: ToolContext) -> ToolResult:
         "er_decision_id": str(decision_row.id),
         "score": scored.score,
     }
-    if args.decision == "escalate":
-        item = ReviewRepository(db).create_item(
-            kind="er_pair",
-            ref={
-                "left_mention_id": str(left.id),
-                "right_mention_id": str(right.id),
-                "er_decision_id": str(decision_row.id),
-            },
-            reason=args.rationale,
-            priority=1,
+    # docs/plan.md §14c's already-fixed "wasted adjudicator budget on an
+    # already-settled pair" gap, reopened for decide's OTHER two outcomes
+    # (close_superseded_er_pairs only ever closes via same_cluster/
+    # hard_conflict side effects that a successful merge happens to
+    # produce -- neither no_merge nor escalate produces either one). Local
+    # import: same deferred-cross-service-import convention this module
+    # already uses for services.er.persist elsewhere (_recompute_exposure_
+    # and_supersede above).
+    from app.services.er.persist import close_decided_er_pair_item, find_open_er_pair_item
+
+    run_id = db.get(Document, left.document_id).run_id
+    if args.decision == "no_merge":
+        closed_item_id = close_decided_er_pair_item(
+            db, run_id, left.id, right.id, decision=args.decision, rationale=args.rationale
         )
-        outcome["review_item_id"] = str(item.id)
+        if closed_item_id is not None:
+            outcome["closed_review_item_id"] = str(closed_item_id)
+    elif args.decision == "escalate":
+        existing = find_open_er_pair_item(db, run_id, left.id, right.id)
+        if existing is not None:
+            # Already queued (e.g. the ER stage's own gray-band item this
+            # pair came from) -- reuse it rather than creating a duplicate
+            # the original stayed open and un-cross-referenced forever.
+            outcome["review_item_id"] = str(existing.id)
+            outcome["review_item_reused"] = True
+        else:
+            item = ReviewRepository(db).create_item(
+                kind="er_pair",
+                ref={
+                    "run_id": str(run_id),  # was missing: made the item
+                    # invisible to every run-scoped GET /review/items?
+                    # run_id=... query, including find_open_er_pair_item's
+                    # own lookup above on a future re-dispatch.
+                    "left_mention_id": str(left.id),
+                    "right_mention_id": str(right.id),
+                    "er_decision_id": str(decision_row.id),
+                },
+                reason=args.rationale,
+                priority=1,
+            )
+            outcome["review_item_id"] = str(item.id)
     ctx.decision = outcome
     return ToolResult(payload=outcome)
 
@@ -1089,6 +1104,27 @@ def _record_er_decision(
     )
 
 
+def _recompute_exposure_and_supersede(
+    db: Session, run_id: uuid.UUID, person_ids: set[uuid.UUID]
+) -> None:
+    """After a successful agent-driven merge (docs/plan.md §14c SUSPICIOUS
+    5b): recompute flags/evidence for every affected person immediately --
+    services/review.py's reviewer merge path already does this
+    (recompute_for_persons) after every merge/split; the adjudicator's own
+    write path skipped it, leaving flags/evidence/doc-counts stale until the
+    next manual compute_exposure call. Also closes any other now-moot
+    gray-band review items this merge answered (SUSPICIOUS 5a) so the
+    adjudicator never re-spends live budget on an already-settled pair.
+    Local import: same deferred-cross-service-import convention this module
+    already uses for services.er.persist / services.pipeline."""
+    from app.services.er.persist import close_superseded_er_pairs
+    from app.services.exposure import recompute_for_persons
+
+    if person_ids:
+        recompute_for_persons(db, run_id, sorted(person_ids))
+    close_superseded_er_pairs(db, run_id)
+
+
 def _perform_merge(
     db: Session,
     ctx: ToolContext,
@@ -1102,8 +1138,12 @@ def _perform_merge(
 ) -> dict:
     """Apply an (already constraint-checked) merge through the er persist
     interfaces: append-only identity_links (old active rows flipped, new
-    rows written -- never deleted) + an er_decisions row. Returns the
-    outcome dict the adjudicator's contract reports."""
+    rows written -- never deleted) + an er_decisions row. Recomputes
+    exposure for every affected person and closes now-moot gray-band items
+    before returning (docs/plan.md §14c SUSPICIOUS 5a/5b) -- see
+    _recompute_exposure_and_supersede above. Returns the outcome dict the
+    adjudicator's contract reports."""
+    run_id = db.get(Document, left.document_id).run_id
     link_left = _active_link(db, left.id)
     link_right = _active_link(db, right.id)
 
@@ -1111,6 +1151,7 @@ def _perform_merge(
         decision_row = _record_er_decision(
             db, ctx, left, right, scored, "merge", rationale, approval_id=approval_id
         )
+        _recompute_exposure_and_supersede(db, run_id, {link_left.person_id})
         return {
             "decision": "merge",
             "already_linked": True,
@@ -1132,6 +1173,7 @@ def _perform_merge(
         _add_link(db, ctx, target, left, scored.score, rationale)
 
     moved = 0
+    absorbed_person_ids: set[uuid.UUID] = set()
     for mention, link in ((left, link_left), (right, link_right)):
         if link is None:
             if _active_link(db, mention.id) is None:  # not just created above
@@ -1139,6 +1181,7 @@ def _perform_merge(
                 moved += 1
         elif link.person_id != target.id:
             source = db.get(Person, link.person_id)
+            absorbed_person_ids.add(source.id)
             for source_link in _active_links_of_person(db, source.id):
                 links.deactivate(source_link)  # append-only: flip, never delete
                 _add_link(
@@ -1159,12 +1202,19 @@ def _perform_merge(
                 target.dob = source.dob
 
     _refresh_person_counts(db, target)
+    for absorbed_id in absorbed_person_ids:
+        # Mirrors services/review.py's _merge_persons, which refreshes BOTH
+        # sides: an absorbed person's active links just dropped to zero and
+        # its mention/document counts must reflect that immediately, not
+        # only the survivor's.
+        _refresh_person_counts(db, db.get(Person, absorbed_id))
     if target.er_confidence is None or scored.score < float(target.er_confidence):
         target.er_confidence = scored.score
     db.flush()
     decision_row = _record_er_decision(
         db, ctx, left, right, scored, "merge", rationale, approval_id=approval_id
     )
+    _recompute_exposure_and_supersede(db, run_id, {target.id, *absorbed_person_ids})
     return {
         "decision": "merge",
         "person_id": str(target.id),

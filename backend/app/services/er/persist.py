@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.db.models import Document, Mention, Passage, PiiElement
+from app.db.models import Document, Mention, Passage, PiiElement, ReviewItem
 from app.repositories.er_decisions import ErDecisionRepository
 from app.repositories.identity_links import IdentityLinkRepository
 from app.repositories.persons import PersonRepository
@@ -56,8 +56,8 @@ from app.services.detectors import run_tier0
 from app.services.detectors import validators as detector_validators
 from app.services.er.blocking import generate_candidate_pairs
 from app.services.er.cluster import cluster_mentions
-from app.services.er.features import SURNAME_TYPO_THRESHOLD
-from app.services.er.normalize import NormalizedName, build_mention, normalize_name
+from app.services.er.features import SURNAME_TYPO_THRESHOLD, compute_features
+from app.services.er.normalize import ErMention, NormalizedName, build_mention, normalize_name
 from app.services.er.scoring import ScoredPair, score_candidates
 
 logger = get_logger("er.persist")
@@ -501,3 +501,244 @@ def get_gray_pairs(db: Session, run_id: uuid.UUID) -> list:
         kind="er_pair", status="open", run_id=run_id, limit=10_000
     )
     return items
+
+
+# ---------------------------------------------------------------------------
+# Stale gray-band items (docs/plan.md §14c SUSPICIOUS 5a)
+# ---------------------------------------------------------------------------
+
+
+def er_mention_from_row(db: Session, mention: Mention) -> ErMention:
+    """One mention row -> the pure layer's ErMention, under the SAME
+    element-admission rule as the production stage (_usable_element above).
+    Shared by the adjudicator's tools (compare_features/decide in
+    services/agents/tools.py) and close_superseded_er_pairs below, so every
+    live re-scoring done OUTSIDE this batch stage still uses production
+    arithmetic over production evidence -- never a trap-downgraded or
+    checksum-invalid value fabricating a hard conflict (or a merge bridge)
+    the pipeline itself never saw."""
+    elements = (
+        db.execute(select(PiiElement).where(PiiElement.mention_id == mention.id))
+        .scalars()
+        .all()
+    )
+    return build_mention(
+        str(mention.id),
+        doc_id=str(mention.document_id),
+        name_raw=mention.name_raw,
+        dob_raw=mention.dob.isoformat() if mention.dob else None,
+        elements=[
+            (e.element_type, e.value_raw)
+            for e in elements
+            if _usable_element(e.validation_status, e.element_type, e.signals)
+        ],
+    )
+
+
+def close_superseded_er_pairs(
+    db: Session,
+    run_id: uuid.UUID,
+    *,
+    exclude_item_id: uuid.UUID | None = None,
+) -> int:
+    """docs/plan.md §14c SUSPICIOUS 5a: after a decision resolves one
+    er_pair (services/review.py's reviewer merge/keep_separate, or the
+    adjudicator's `decide` merge in services/agents/tools.py), close every
+    OTHER open er_pair review item for this run whose question that
+    decision already answered -- so the adjudicator never re-spends live
+    budget re-adjudicating a pair the pipeline or a human already settled.
+
+    Scope (deliberate, simpler-than-general choice, stated per the task):
+    an item is superseded when it is moot RIGHT NOW, checked fresh against
+    current identity_links/elements -- not by tracing which specific
+    earlier decision caused it. Two structural conditions, either one closes
+    an item:
+
+    - same_cluster: both mentions already resolve (active identity_links)
+      to the same person. This closes the EXACT pair just decided too, when
+      it had its own queued item -- the adjudicator's `decide` tool writes
+      links straight from mention ids and never touches a review_item, so
+      without this its own queued item would sit open forever (the
+      `already_linked` waste the plan calls out by name). It also closes
+      TRANSITIVELY-implied pairs for free: resolving (A,B) after an earlier,
+      separately-decided (B,C) already lands A, B, and C in one cluster, so
+      a separately-queued (A,C) item is caught by this same check with no
+      extra graph bookkeeping -- merges already move a whole absorbed
+      person's mentions, not just the one pair's two mentions
+      (services/review.py's _merge_persons, services/agents/tools.py's
+      _perform_merge), so transitivity falls out of "is it the same person"
+      alone.
+    - hard_conflict: the pair itself scores a live hard conflict
+      (conflicting strong identifiers -- compute_features, the exact
+      arithmetic `decide`/`compare_features` use). A pair that was gray-band
+      at ER-stage time can only reach this state if the elements underneath
+      changed since (e.g. a reviewer `correct` decision on one side); an
+      escalate-created item (tools.py's `_decide`) never had a hard-conflict
+      guard at creation time, so this check is the backstop for those.
+
+    NOT implemented (a legitimate narrower scope, not an oversight): tracing
+    "which decision specifically resolved this item", or transitively
+    walking enemy-of-enemy conflicts against every mention now in a cluster
+    (cluster.py's blocking-time enemy propagation is richer than this).
+    Neither is needed here -- a currently-open item that clears both checks
+    above genuinely still needs a decision, which is the correct
+    conservative default (never silently close a question that is not, in
+    fact, moot).
+
+    Terminal state: reuses 'dismissed', not a new status value --
+    review_items.status's CHECK constraint (db/models.py) only allows
+    open/decided/dismissed, and 'dismissed' already carries exactly this
+    "moot, not a real decision" meaning elsewhere in this codebase
+    (services/exposure.py's _dismiss_obsolete_unattached_items: same
+    status='dismissed' + a review_decisions row authored reviewer='system'
+    pattern for a parked item whose question resolved itself). A migration
+    for a dedicated 'superseded' status would be a defensible follow-up, not
+    a requirement -- the review_decisions row's decision='superseded' value
+    (never one of the real merge/keep_separate/no_merge verbs) already lets
+    anyone reading the audit trail tell the two apart.
+
+    Returns the number of items closed. Commits nothing (caller owns the
+    transaction, per the repository convention)."""
+    items, _ = ReviewRepository(db).list_items(
+        kind="er_pair", status="open", run_id=run_id, limit=10_000
+    )
+    if not items:
+        return 0
+
+    links_repo = IdentityLinkRepository(db)
+    review_repo = ReviewRepository(db)
+    closed = 0
+    for item in items:
+        if exclude_item_id is not None and item.id == exclude_item_id:
+            continue
+        ref = item.ref or {}
+        left_id = ref.get("left_mention_id")
+        right_id = ref.get("right_mention_id")
+        if not left_id or not right_id:
+            continue  # not a resolvable mention pair; leave for manual triage
+        left = db.get(Mention, uuid.UUID(left_id))
+        right = db.get(Mention, uuid.UUID(right_id))
+        if left is None or right is None:
+            continue  # mention since deleted; leave for manual triage
+
+        left_link = links_repo.active_link_for_mention(left.id)
+        right_link = links_repo.active_link_for_mention(right.id)
+        reason: str | None = None
+        if (
+            left_link is not None
+            and right_link is not None
+            and left_link.person_id == right_link.person_id
+        ):
+            reason = "same_cluster"
+        else:
+            features = compute_features(
+                er_mention_from_row(db, left), er_mention_from_row(db, right)
+            )
+            if features.conflicting_strong_types:
+                reason = "hard_conflict"
+        if reason is None:
+            continue
+
+        item.status = "dismissed"
+        review_repo.create_decision(
+            review_item_id=item.id,
+            decision="superseded",
+            reviewer="system",
+            notes=(
+                f"auto-closed ({reason}): another decision already resolved "
+                "this pair's identity question"
+            ),
+        )
+        closed += 1
+
+    if closed:
+        db.flush()
+        logger.info(
+            "er_pairs_superseded",
+            run_id=str(run_id),
+            closed=closed,
+            excluded=str(exclude_item_id) if exclude_item_id else None,
+        )
+    return closed
+
+
+def find_open_er_pair_item(
+    db: Session,
+    run_id: uuid.UUID,
+    left_mention_id: uuid.UUID,
+    right_mention_id: uuid.UUID,
+) -> ReviewItem | None:
+    """The one open er_pair review item (if any) asking exactly this
+    question -- order-independent on (left, right). Public (not
+    underscore-prefixed): shared across services/agents/tools.py's `decide`
+    tool and this module, the same lesson the er_mention_from_row cleanup
+    already applied to _usable_element (private cross-module imports of a
+    name two call sites both need is the anti-pattern; a shared public
+    function is the fix)."""
+    items, _ = ReviewRepository(db).list_items(
+        kind="er_pair", status="open", run_id=run_id, limit=10_000
+    )
+    target = {str(left_mention_id), str(right_mention_id)}
+    for item in items:
+        ref = item.ref or {}
+        if {ref.get("left_mention_id"), ref.get("right_mention_id")} == target:
+            return item
+    return None
+
+
+def close_decided_er_pair_item(
+    db: Session,
+    run_id: uuid.UUID,
+    left_mention_id: uuid.UUID,
+    right_mention_id: uuid.UUID,
+    *,
+    decision: str,
+    rationale: str,
+) -> uuid.UUID | None:
+    """docs/plan.md §14c's 'wasted adjudicator budget on an already-settled
+    pair' gap, reopened for `decide`'s no_merge outcome: close_superseded_
+    er_pairs above only detects a pair's question was answered through two
+    STRUCTURAL side effects -- same_cluster or a live hard_conflict -- which
+    is why a successful `merge` already closes its own queued item (moving
+    both mentions into one person trivially satisfies same_cluster). A
+    no_merge decision produces NEITHER side effect (the two mentions
+    deliberately stay in different persons, and 'no shared strong
+    identifier' is not the same predicate as 'a live hard conflict'), so
+    without this, a no_merge verdict left its own review_items row open
+    forever -- a later batch re-dispatch (or a human working the queue)
+    would re-ask a question the adjudicator already answered in
+    er_decisions. Verified live during integration testing: three real
+    gray-band pairs dispatched through the adjudicator, two decided
+    no_merge/were otherwise resolved, and the no_merge pair's own item
+    stayed 'open' with no code path that would ever close it.
+
+    Call this for `no_merge` only -- `escalate` must NOT close anything
+    (the pair still needs a decision); see find_open_er_pair_item, which
+    `decide`'s escalate branch uses instead to avoid creating a DUPLICATE
+    item for a pair that already has one open (a related, separately-fixed
+    gap: the escalate branch used to unconditionally create a new item
+    every time, and that item's `ref` omitted `run_id` entirely, making it
+    invisible to every run-scoped `GET /review/items?run_id=...` query --
+    including the one this very close/find pair uses).
+
+    Returns the closed item's id, or None if no open item asked this exact
+    question (a fully ad hoc adjudicate_pair dispatch outside the review
+    queue has no item to close -- not an error)."""
+    item = find_open_er_pair_item(db, run_id, left_mention_id, right_mention_id)
+    if item is None:
+        return None
+    item.status = "decided"
+    ReviewRepository(db).create_decision(
+        review_item_id=item.id,
+        decision=decision,
+        reviewer="agent",
+        notes=rationale,
+    )
+    db.flush()
+    logger.info(
+        "er_pair_item_decided",
+        run_id=str(run_id),
+        review_item_id=str(item.id),
+        decision=decision,
+    )
+    return item.id
