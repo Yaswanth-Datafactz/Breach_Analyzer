@@ -14,7 +14,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.db.models import ApprovalRequest, ErDecision, IdentityLink, Passage, ReviewItem
+from app.db.models import ApprovalRequest, Document, ErDecision, IdentityLink, Passage, ReviewItem
 from app.db.session import SessionLocal
 from app.repositories.agent_runs import AgentRunRepository
 from app.services.agents.tools import (
@@ -376,3 +376,55 @@ def test_get_page_image_returns_vision_payload(db, env):
     assert not result.is_error
     assert result.payload["media_type"] == "image/png"
     assert len(result.payload["_image_base64"]) > 1000
+
+
+def _malformed_pdf_document(db, env):
+    """A document too malformed for pymupdf to even OPEN (not just a bad
+    page index) -- reproduces the live-run finding (2026-08-13): a real
+    corpus PDF crashed run_ocr with an unhandled pymupdf.FileDataError
+    before tools.py's open/render guard existed. Truncated mid-header,
+    same shape as conftest.py's handcrafted truncated-docx problem file.
+    A fresh marker per call: documents.sha256 is unique PER RUN, and
+    env.run (module-scoped) is shared across every test in this file."""
+    from pathlib import Path
+
+    from app.services.ingestion.inventory import sha256_of
+    from app.services.parsing import storage
+
+    marker = uuid.uuid4().hex
+    content = f"%PDF-1.7\n1 0 obj\n<< /Type /Catalog {marker}".encode()  # cut off mid-object
+    sha = sha256_of(content)
+    storage.store_original(content, sha, Path("truncated.pdf").suffix)
+    doc = Document(
+        run_id=env.run.id,
+        sha256=sha,
+        original_filename=f"truncated_for_ocr_guard_test_{marker}.pdf",
+        rel_path=f"agents-tests/truncated_for_ocr_guard_test_{marker}.pdf",
+        byte_size=len(content),
+        file_class="pdf_scanned",
+        status="done",
+    )
+    db.add(doc)
+    db.flush()
+    return doc
+
+
+def test_run_ocr_degrades_gracefully_on_a_file_pymupdf_cannot_open(db, env):
+    """Regression test (2026-08-13 live-run finding): a truncated/malformed
+    PDF must fail as a normal ToolResult(is_error=True) the calling agent
+    can reason over next, same posture try_parser already had -- not an
+    unhandled exception that crashes the whole agent run as `status=failed`
+    with a raw Python traceback for an outcome."""
+    doc = _malformed_pdf_document(db, env)
+    result = run_tool(db, "run_ocr", {"document_id": str(doc.id), "page": 0}, ToolContext())
+    assert result.is_error
+    assert result.payload["error"] == "failed to open/render document for OCR"
+    assert "exception" in result.payload
+
+
+def test_get_page_image_degrades_gracefully_on_a_file_pymupdf_cannot_open(db, env):
+    doc = _malformed_pdf_document(db, env)
+    result = run_tool(db, "get_page_image", {"document_id": str(doc.id), "page": 0}, ToolContext())
+    assert result.is_error
+    assert result.payload["error"] == "failed to open/render document for get_page_image"
+    assert "exception" in result.payload

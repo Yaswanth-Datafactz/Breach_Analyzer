@@ -611,23 +611,39 @@ def _run_ocr(db: Session, args: RunOcrArgs, ctx: ToolContext) -> ToolResult:
         return _error(f"document {args.document_id} not found")
     content = _document_bytes(document)
     deskew_angle = None
-    if document.file_class in ("pdf_digital", "pdf_scanned"):
-        pdf = pymupdf.open(stream=content, filetype="pdf")
-        try:
-            if args.page >= pdf.page_count:
-                return _error(
-                    f"page {args.page} out of range (document has {pdf.page_count} pages)"
-                )
-            image = rasterize_pdf_page(pdf[args.page], args.dpi)
-        finally:
-            pdf.close()
-    elif document.file_class == "png":
-        if args.page != 0:
-            return _error("PNG documents have a single page (use page=0)")
-        image = Image.open(io.BytesIO(content)).convert("RGB")
-    else:
+    try:
+        if document.file_class in ("pdf_digital", "pdf_scanned"):
+            pdf = pymupdf.open(stream=content, filetype="pdf")
+            try:
+                if args.page >= pdf.page_count:
+                    return _error(
+                        f"page {args.page} out of range (document has {pdf.page_count} pages)"
+                    )
+                image = rasterize_pdf_page(pdf[args.page], args.dpi)
+            finally:
+                pdf.close()
+        elif document.file_class == "png":
+            if args.page != 0:
+                return _error("PNG documents have a single page (use page=0)")
+            image = Image.open(io.BytesIO(content)).convert("RGB")
+        else:
+            return _error(
+                f"run_ocr supports pdf/png documents, not file_class '{document.file_class}'"
+            )
+    except Exception as exc:
+        # A file too malformed to even open/render for OCR IS the diagnostic
+        # signal (same posture _try_parser already takes on a failed parse,
+        # docs/plan.md agent-layer investigation: this is a genuine
+        # investigator-agent tool result the model reasons over next --
+        # e.g. "OCR failed too, this looks unrecoverable, escalate" -- not
+        # an implementation bug that should crash the whole agent run.
+        # Found live 2026-08-13: a genuinely truncated corpus PDF crashed
+        # this exact path with an unhandled pymupdf.FileDataError before
+        # this guard existed.
         return _error(
-            f"run_ocr supports pdf/png documents, not file_class '{document.file_class}'"
+            "failed to open/render document for OCR",
+            exception=type(exc).__name__,
+            detail=str(exc)[:500],
         )
     if args.preprocess:
         pre = preprocess_image(image)
@@ -661,23 +677,33 @@ def _get_page_image(db: Session, args: PageImageArgs, ctx: ToolContext) -> ToolR
     if document is None:
         return _error(f"document {args.document_id} not found")
     content = _document_bytes(document)
-    if document.file_class in ("pdf_digital", "pdf_scanned"):
-        pdf = pymupdf.open(stream=content, filetype="pdf")
-        try:
-            if args.page >= pdf.page_count:
-                return _error(
-                    f"page {args.page} out of range (document has {pdf.page_count} pages)"
-                )
-            image = rasterize_pdf_page(pdf[args.page], _PAGE_IMAGE_DPI)
-        finally:
-            pdf.close()
-    elif document.file_class == "png":
-        if args.page != 0:
-            return _error("PNG documents have a single page (use page=0)")
-        image = Image.open(io.BytesIO(content)).convert("RGB")
-    else:
+    try:
+        if document.file_class in ("pdf_digital", "pdf_scanned"):
+            pdf = pymupdf.open(stream=content, filetype="pdf")
+            try:
+                if args.page >= pdf.page_count:
+                    return _error(
+                        f"page {args.page} out of range (document has {pdf.page_count} pages)"
+                    )
+                image = rasterize_pdf_page(pdf[args.page], _PAGE_IMAGE_DPI)
+            finally:
+                pdf.close()
+        elif document.file_class == "png":
+            if args.page != 0:
+                return _error("PNG documents have a single page (use page=0)")
+            image = Image.open(io.BytesIO(content)).convert("RGB")
+        else:
+            return _error(
+                f"get_page_image supports pdf/png documents, not '{document.file_class}'"
+            )
+    except Exception as exc:
+        # Same guard and same reasoning as _run_ocr just above -- a
+        # malformed file failing to open/render is a diagnostic signal for
+        # the calling agent, not a process-crashing implementation bug.
         return _error(
-            f"get_page_image supports pdf/png documents, not '{document.file_class}'"
+            "failed to open/render document for get_page_image",
+            exception=type(exc).__name__,
+            detail=str(exc)[:500],
         )
     image.thumbnail((1600, 1600))  # bound payload size; plenty for reading a page
     buffer = io.BytesIO()
