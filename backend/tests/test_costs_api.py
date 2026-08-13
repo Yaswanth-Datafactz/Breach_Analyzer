@@ -76,11 +76,11 @@ def seeded_run(db):
         input_tokens=1000, output_tokens=100, cached_input_tokens=600, cost_usd=0.006,
     )
     repo.create(
-        run_id=run.id, purpose="tier2_text", model="gpt-5.6-terra", document_id=pdf_doc.id,
+        run_id=run.id, purpose="tier2_text", model="gpt-5.5", document_id=pdf_doc.id,
         input_tokens=2000, output_tokens=500, cached_input_tokens=1500, cost_usd=0.03,
     )
     repo.create(
-        run_id=run.id, purpose="agent_orchestrator", model="gpt-5.6-sol", document_id=None,
+        run_id=run.id, purpose="agent_orchestrator", model="gpt-5.5", document_id=None,
         input_tokens=4000, output_tokens=800, cached_input_tokens=0, cost_usd=0.05,
     )
     db.commit()
@@ -102,11 +102,11 @@ def test_summary_math_per_purpose_model(client, headers, seeded_run):
     assert tier1["cost_usd"] == pytest.approx(0.01)
     assert tier1["tier"] == "tier1"
 
-    tier2 = rows[("tier2_text", "gpt-5.6-terra")]
+    tier2 = rows[("tier2_text", "gpt-5.5")]
     assert tier2["tier"] == "tier2"
     assert tier2["cache_hit_rate"] == pytest.approx(0.75)
 
-    agent = rows[("agent_orchestrator", "gpt-5.6-sol")]
+    agent = rows[("agent_orchestrator", "gpt-5.5")]
     assert agent["tier"] == "agents"
 
     totals = body["totals"]
@@ -158,7 +158,7 @@ def test_extrapolation_422_without_document_attributed_costs(client, headers, db
     run = _make_run(db)
     _make_document(db, run, "txt")
     CostEventRepository(db).create(
-        run_id=run.id, purpose="agent_auditor", model="gpt-5.6-sol",
+        run_id=run.id, purpose="agent_auditor", model="gpt-5.5",
         document_id=None, cost_usd=0.02,
     )
     db.commit()

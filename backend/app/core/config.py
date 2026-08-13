@@ -46,31 +46,64 @@ class Settings(BaseSettings):
     # OpenAI -- tier 2 escalation (text + vision) and the agent layer
     # (docs/plan.md D3, revised 2026-08-12: swapped in for Anthropic -- no
     # Anthropic key is available in this environment, only an OpenAI one.
-    # One provider still keeps traces/pricing uniform; OpenAI's function/
-    # tool-calling API (chat.completions with `tools=[...]`) is the
-    # equivalent capability the agent runner is built on -- see
-    # services/agents/model_client.py's OpenAIModelClient for the
-    # translation layer). `tier2_model` mirrors the old sonnet role
-    # (cheaper, escalation + vision); `agent_model` mirrors the old opus
-    # role (strongest, judgment-heavy tool use) and stays a config knob so
-    # the cost/accuracy comparison can downgrade agents (e.g. to
-    # gpt-5.6-luna) without a code change. Prices verified 2026-08-12
-    # against https://developers.openai.com/api/docs/pricing (the current
-    # redirect target of platform.openai.com/docs/pricing) -- gpt-5.6 is
-    # OpenAI's current flagship generation, three tiers named sol/terra/
-    # luna mirroring exactly the old opus/sonnet/haiku split (confirmed via
-    # https://openai.com/index/gpt-5-6/: "gpt-5.6 alias routes ... to
-    # gpt-5.6-sol, the model for flagship capability. Use gpt-5.6-terra for
-    # strong performance at a lower price and gpt-5.6-luna for efficient,
-    # high-volume workloads."). Both are reasoning models: no temperature/
-    # top_p/logprobs (see MODEL_PRICES_USD_PER_MTOK's note and
-    # services/confidence.py) -- the exact same "no sampling knobs" shape
-    # opus-5 had, confirmed via OpenAI's own reasoning-models guide
-    # (developers.openai.com/api/docs/guides/reasoning) and community
-    # reports of 400s on those params for GPT-5.x reasoning models.
+    # REVISED AGAIN 2026-08-13: "an OpenAI one" turned out to mean an Azure
+    # AI Foundry resource key, not a platform.openai.com key -- confirmed
+    # live (a real call to api.openai.com with this key 401'd; a call to
+    # this project's own Foundry resource at the classic Azure OpenAI
+    # deployments path succeeded). This is the SAME Foundry resource
+    # DeepSeek uses (`deepseek_base_url`'s host), exposed through a second,
+    # different endpoint surface for native OpenAI deployments -- Azure AI
+    # Foundry's unified Model Inference API (`.../models/chat/completions`,
+    # deployment name in the request body) serves catalog/partner models
+    # like DeepSeek; native OpenAI deployments instead sit behind the
+    # classic Azure OpenAI deployments API
+    # (`.../openai/deployments/{name}/chat/completions?api-version=...`,
+    # deployment name IN THE URL). Both are Chat-Completions-shaped, so
+    # OpenAIModelClient/OpenAIExtractionAdapter's translation logic is
+    # unchanged -- only the SDK client class changes, `openai.OpenAI` ->
+    # `openai.AzureOpenAI` (`AsyncAzureOpenAI` for the extraction adapter),
+    # which needs `openai_base_url` + `openai_api_version` alongside the
+    # key. Confirmed live: `Authorization: Bearer` AND the classic `api-key`
+    # header both work; api-version 2025-04-01-preview works (older
+    # 2024-10-21 and 2025-01-01-preview also worked for chat/completions,
+    # 2025-04-01-preview picked for margin -- it is also the first version
+    # this resource accepts for the Responses API, should a future need
+    # arise). A live completion also confirmed `message.refusal` is a real
+    # field, `null` on a normal completion -- the defensive
+    # getattr(..., None) in model_client.py's _map_stop_reason was
+    # therefore the right shape, now verified rather than assumed.
+    #
+    # `tier2_model`/`agent_model` BOTH point at "gpt-5.5", the one
+    # deployment that actually exists on this Foundry resource (portal:
+    # Global Standard, model version 2026-04-24) -- there is no second,
+    # stronger deployment for the agent role the way the original
+    # sol/terra split assumed. This is a pragmatic simplification, not an
+    # oversight: both config knobs stay distinct settings (a second
+    # deployment added later is a config change, not a code change), and
+    # the required cost/accuracy comparison (docs/plan.md §9 Config
+    # A/B) varies escalation threshold/vision/gray-band width, not the
+    # tier-2 model identity, so a single verified model does not block it.
+    # Prices verified 2026-08-13: the official Azure pricing page
+    # (azure.microsoft.com/en-us/pricing/details/cognitive-services/openai-service)
+    # renders its price table client-side (fetched as literal "$-"
+    # placeholders through this environment's fetch path, not a real
+    # number) -- cross-checked instead against two independent pricing
+    # trackers (a Cloudzero-referencing search summary and benchlm.ai,
+    # last synced 2026-07-25) that agree exactly: $5.00 / $30.00 /
+    # $0.50 per 1M input/output/cached-input tokens for gpt-5.5 Global
+    # Standard. Flagged as secondary-source-verified, not primary-source,
+    # given the JS-rendering gap -- re-check against the Azure pricing
+    # calculator directly if this number matters for a high-stakes claim.
+    # gpt-5.5 is a reasoning model: no temperature/top_p/logprobs (see
+    # MODEL_PRICES_USD_PER_MTOK's note and services/confidence.py) --
+    # confirmed live (the model_client.py adapter never sends these and
+    # every live call succeeded) as well as via OpenAI's reasoning-models
+    # guide (developers.openai.com/api/docs/guides/reasoning).
     openai_api_key: str = ""
-    tier2_model: str = "gpt-5.6-terra"
-    agent_model: str = "gpt-5.6-sol"
+    openai_base_url: str = "https://ai-training-msftfoundry.cognitiveservices.azure.com"
+    openai_api_version: str = "2025-04-01-preview"
+    tier2_model: str = "gpt-5.5"
+    agent_model: str = "gpt-5.5"
 
     # Tier escalation threshold theta (docs/plan.md §9): composite confidence
     # below this escalates a tier-1 extraction to tier 2. Config A "economy"
@@ -157,22 +190,16 @@ class Settings(BaseSettings):
 # sourced there, pending direct Azure-billing confirmation -- see UC2's
 # core/config.py).
 #
-# OpenAI figures verified live 2026-08-12 against
-# https://developers.openai.com/api/docs/pricing (platform.openai.com/docs/
-# pricing redirects there; openai.com/api/pricing itself 403'd to this
-# fetch tool -- the developers.openai.com page is the same provider-owned
-# pricing source, just the current URL). Table below is the exact reading
-# at that time; no figure here is carried over or guessed. Superseded
-# claude-sonnet-4-6/claude-opus-5/claude-haiku-4-5 entries removed outright
-# (docs/plan.md D3 swap to OpenAI, 2026-08-12) -- nothing in the running
-# system will ever hit an Anthropic model id again, so keeping them
-# commented out would be dead weight, not a useful history (docs/plan.md
-# itself is the historical record of the swap).
+# Superseded claude-sonnet-4-6/claude-opus-5/claude-haiku-4-5 entries
+# removed outright (docs/plan.md D3 swap to OpenAI, 2026-08-12) -- nothing
+# in the running system will ever hit an Anthropic model id again, so
+# keeping them commented out would be dead weight, not a useful history
+# (docs/plan.md itself is the historical record of the swap).
 #
-# gpt-5.6-sol has NO published cached-input discount distinct from input in
-# the source table beyond the ratio below (cached_input is the table's own
-# separate "Cached Input" column, not derived) -- reasoning models (D3
-# comment above): no logprobs, no temperature/top_p (services/confidence.py
+# gpt-5.5 figures verified 2026-08-13 (config.py's OpenAI settings block
+# has the full citation + the JS-rendering caveat on the primary source) --
+# $5.00/$30.00/$0.50 input/output/cached-input per 1M tokens. Reasoning
+# model: no logprobs, no temperature/top_p (services/confidence.py
 # renormalizes around the missing logprob signal exactly as it did for
 # Anthropic, for this new reason).
 # Re-verify ALL of these again against the providers' own pricing pages
@@ -180,12 +207,14 @@ class Settings(BaseSettings):
 # quote unverified) -- prices move fast on frontier models.
 MODEL_PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
     "DeepSeek-V3.2": {"input": 0.58, "output": 1.68},
-    "gpt-5.6-sol": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
-    "gpt-5.6-terra": {"input": 2.00, "output": 12.00, "cached_input": 0.20},
-    # Cheapest current tier -- kept available (unused by default) purely so
-    # `agent_model`/`tier2_model` can be downgraded to it for the cost/
-    # accuracy comparison, the exact role claude-haiku-4-5 played before.
-    "gpt-5.6-luna": {"input": 0.20, "output": 1.20, "cached_input": 0.02},
+    # gpt-5.6-sol/terra/luna (three-tier split) removed 2026-08-13: this
+    # Foundry resource has exactly one native-OpenAI deployment, "gpt-5.5"
+    # (config.py's OpenAI settings block has the full story + price
+    # citation) -- keeping priced entries for deployments that do not
+    # exist here risked a silent misconfiguration if tier2_model/
+    # agent_model were ever pointed at one by typo. Add a priced entry
+    # here when a second deployment actually exists to route to.
+    "gpt-5.5": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
 }
 
 

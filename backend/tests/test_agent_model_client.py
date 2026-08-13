@@ -28,8 +28,14 @@ from app.services.agents.model_client import (
 def _client() -> OpenAIModelClient:
     """A real OpenAIModelClient with a fake api_key -- __init__ only ever
     constructs the SDK client object (no network call until create_turn),
-    so this is safe without a real key."""
-    return OpenAIModelClient("sk-fake-never-used")
+    so this is safe without a real key. azure_endpoint/api_version are
+    required by AzureOpenAI's constructor (2026-08-13 revision: this
+    client's key is an Azure AI Foundry resource key, not a
+    platform.openai.com key -- config.py's OpenAI settings block has the
+    full story) but never dialed since _client gets swapped for a fake."""
+    return OpenAIModelClient(
+        "sk-fake-never-used", "https://unused.example.com", "2025-04-01-preview"
+    )
 
 
 def _fake_completions(response):
@@ -74,7 +80,7 @@ def test_create_turn_never_sends_sampling_params():
     client = _client()
     create, captured = _fake_completions(_response(text="hi"))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    client.create_turn(model="gpt-5.6-sol", system="be terse", tools=[], messages=[
+    client.create_turn(model="gpt-5.5", system="be terse", tools=[], messages=[
         {"role": "user", "content": "start"},
     ])
     kwargs = captured["kwargs"]
@@ -83,7 +89,7 @@ def test_create_turn_never_sends_sampling_params():
     assert "logprobs" not in kwargs
     assert "max_tokens" not in kwargs  # legacy field must never be sent
     assert kwargs["max_completion_tokens"] == 8_000
-    assert kwargs["model"] == "gpt-5.6-sol"
+    assert kwargs["model"] == "gpt-5.5"
     assert kwargs["messages"][0] == {"role": "system", "content": "be terse"}
     assert kwargs["messages"][1] == {"role": "user", "content": "start"}
 
@@ -97,7 +103,7 @@ def test_text_only_turn_maps_to_end_turn():
         _response(text="the answer is 42", finish_reason="stop", prompt_tokens=100, completion_tokens=8)
     )
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[
         {"role": "user", "content": "q"},
     ])
     assert turn.stop_reason == "end_turn"
@@ -120,7 +126,7 @@ def test_tool_call_turn_parses_arguments_and_ids():
     ]
     create, _ = _fake_completions(_response(text=None, tool_calls=calls, finish_reason="tool_calls"))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.stop_reason == "tool_use"
     assert turn.text == ""
     assert [c.name for c in turn.tool_calls] == ["get_passage_text", "decide"]
@@ -137,7 +143,7 @@ def test_malformed_tool_arguments_degrade_to_empty_dict_not_a_crash():
     calls = [_tool_call("call_1", "decide", "{not valid json")]
     create, _ = _fake_completions(_response(tool_calls=calls, finish_reason="tool_calls"))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.tool_calls[0].input == {}
 
 
@@ -146,7 +152,7 @@ def test_non_dict_json_arguments_also_degrade_to_empty_dict():
     calls = [_tool_call("call_1", "decide", json.dumps(["not", "an", "object"]))]
     create, _ = _fake_completions(_response(tool_calls=calls, finish_reason="tool_calls"))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.tool_calls[0].input == {}
 
 
@@ -170,7 +176,7 @@ def test_stop_reason_mapping_every_branch(finish_reason, refusal, expected):
     client = _client()
     create, _ = _fake_completions(_response(text="x", finish_reason=finish_reason, refusal=refusal))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.stop_reason == expected
 
 
@@ -187,7 +193,7 @@ def test_message_without_a_refusal_attribute_at_all_is_handled():
     )
     create, _ = _fake_completions(response)
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.stop_reason == "end_turn"
 
 
@@ -198,7 +204,7 @@ def test_cached_tokens_read_when_present():
     client = _client()
     create, _ = _fake_completions(_response(text="x", cached_tokens=42))
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.cached_input_tokens == 42
 
 
@@ -206,7 +212,7 @@ def test_cached_tokens_default_to_zero_when_details_absent():
     client = _client()
     create, _ = _fake_completions(_response(text="x"))  # prompt_tokens_details=None
     client._client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
-    turn = client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[])
+    turn = client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[])
     assert turn.cached_input_tokens == 0
 
 
@@ -231,7 +237,7 @@ def test_assistant_turn_with_tool_calls_translates_to_openai_shape():
             ],
         },
     ]
-    client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=ir_messages)
+    client.create_turn(model="gpt-5.5", system="s", tools=[], messages=ir_messages)
     sent = captured["kwargs"]["messages"]
     assistant_msg = next(m for m in sent if m.get("role") == "assistant")
     assert assistant_msg["content"] == "let me check"
@@ -255,7 +261,7 @@ def test_assistant_turn_with_only_tool_calls_has_null_content():
             "content": [{"type": "tool_use", "id": "c1", "name": "sniff_type", "input": {}}],
         },
     ]
-    client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=ir_messages)
+    client.create_turn(model="gpt-5.5", system="s", tools=[], messages=ir_messages)
     assistant_msg = next(m for m in captured["kwargs"]["messages"] if m.get("role") == "assistant")
     assert assistant_msg["content"] is None
 
@@ -274,7 +280,7 @@ def test_bundled_tool_results_unbundle_to_one_message_each():
             tool_result_block("call_2", {"error": "bad args"}, is_error=True),
         ],
     }
-    client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[bundled_turn])
+    client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[bundled_turn])
     tool_msgs = [m for m in captured["kwargs"]["messages"] if m.get("role") == "tool"]
     assert len(tool_msgs) == 2
     assert tool_msgs[0]["tool_call_id"] == "call_1"
@@ -296,7 +302,7 @@ def test_image_tool_result_re_expands_into_a_separate_user_message():
         "call_img", {"page": 0, "_image_base64": "QUJD", "media_type": "image/png"}, is_error=False
     )
     bundled_turn = {"role": "user", "content": [block]}
-    client.create_turn(model="gpt-5.6-sol", system="s", tools=[], messages=[bundled_turn])
+    client.create_turn(model="gpt-5.5", system="s", tools=[], messages=[bundled_turn])
     sent = captured["kwargs"]["messages"]
     tool_idx = next(i for i, m in enumerate(sent) if m.get("role") == "tool")
     assert sent[tool_idx]["tool_call_id"] == "call_img"
@@ -335,7 +341,7 @@ def test_full_two_tool_call_turn_round_trip():
             ],
         },
     ]
-    turn = client.create_turn(model="gpt-5.6-sol", system="you are the investigator", tools=[], messages=messages)
+    turn = client.create_turn(model="gpt-5.5", system="you are the investigator", tools=[], messages=messages)
     assert turn.stop_reason == "end_turn"
     sent = captured["kwargs"]["messages"]
     assert sent[0] == {"role": "system", "content": "you are the investigator"}
@@ -352,7 +358,9 @@ def test_full_two_tool_call_turn_round_trip():
 def test_construction_makes_no_network_call():
     """__init__ only builds the SDK client object; no request is issued
     until create_turn is actually called."""
-    client = OpenAIModelClient("sk-fake-never-used")
+    client = OpenAIModelClient(
+        "sk-fake-never-used", "https://unused.example.com", "2025-04-01-preview"
+    )
     assert client.is_scripted is False
     assert client._client is not None  # constructed, but nothing was sent
 

@@ -35,6 +35,8 @@ def get_tier2_adapter(settings: Settings) -> ExtractionAdapter | None:
         return None
     return OpenAIExtractionAdapter(
         api_key=settings.openai_api_key,
+        base_url=settings.openai_base_url,
+        api_version=settings.openai_api_version,
         model=settings.tier2_model,
     )
 

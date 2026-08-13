@@ -13,8 +13,8 @@ AsyncOpenAI's `chat.completions.create` shape instead of AsyncAnthropic's
   no OpenAI equivalent -- prompt caching there is automatic and server-side
   (openai_adapter.py's module docstring), so there is nothing left in the
   request to assert on. Repurposed into the assertion that IS load-bearing
-  for this provider instead: gpt-5.6-sol/terra are reasoning models that
-  400 on temperature/top_p/logprobs, so every call must omit them and use
+  for this provider instead: gpt-5.5 is a reasoning model that 400s on
+  temperature/top_p/logprobs, so every call must omit them and use
   `max_completion_tokens`, never the legacy `max_tokens`.
 - usage normalization incl. cached tokens -- kept, but the arithmetic
   flips: Anthropic reported input tokens EXCLUDING cache reads/writes (the
@@ -89,7 +89,13 @@ def _response(text, *, prompt_tokens=130, completion_tokens=50, cached_tokens=30
 
 def _adapter(response):
     client = _FakeClient(response)
-    return OpenAIExtractionAdapter(api_key="unused", model="gpt-5.6-terra", client=client), client
+    return (
+        OpenAIExtractionAdapter(
+            api_key="unused", base_url="https://unused.example.com", api_version="2025-04-01-preview",
+            model="gpt-5.5", client=client,
+        ),
+        client,
+    )
 
 
 def test_extract_text_sends_json_schema_response_format_and_normalizes_usage():
@@ -99,7 +105,7 @@ def test_extract_text_sends_json_schema_response_format_and_normalizes_usage():
     )
 
     (request,) = client.chat.completions.requests
-    assert request["model"] == "gpt-5.6-terra"
+    assert request["model"] == "gpt-5.5"
     assert request["messages"] == [
         {"role": "system", "content": "SYSTEM"},
         {"role": "user", "content": [{"type": "text", "text": "USER"}]},
@@ -125,7 +131,7 @@ def test_reasoning_model_call_omits_sampling_params_and_uses_max_completion_toke
     """The load-bearing request-shape assertion for this provider, replacing
     the retired suite's cache_control test (module docstring: OpenAI prompt
     caching is automatic/server-side -- nothing left to assert in the
-    request). gpt-5.6-sol/terra are reasoning models: temperature/top_p/
+    request). gpt-5.5 is a reasoning model: temperature/top_p/
     logprobs/top_logprobs/penalty params 400 on Chat Completions, and the
     output-budget field is renamed max_completion_tokens."""
     adapter, client = _adapter(_response(json.dumps(_PAYLOAD)))

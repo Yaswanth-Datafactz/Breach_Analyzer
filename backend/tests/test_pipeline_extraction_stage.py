@@ -48,7 +48,13 @@ def _document(db, run_id) -> Document:
     return db.scalar(select(Document).where(Document.run_id == run_id))
 
 
-def test_no_deepseek_key_skips_extraction_and_finishes_at_tier0(db, tmp_path: Path):
+def test_no_deepseek_key_skips_extraction_and_finishes_at_tier0(db, tmp_path: Path, monkeypatch):
+    # Force the keyless precondition explicitly rather than assume it of the
+    # ambient dev environment -- a real DEEPSEEK_API_KEY in .env (a live-run
+    # prerequisite, not a test-hygiene one) must never flip this test's
+    # meaning (mirrors test_pipeline_er_exposure_stage.py's identical fix).
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
     settings = get_settings()
     assert settings.deepseek_api_key == "", "test requires the keyless dev default"
     marker = uuid.uuid4().hex
@@ -68,6 +74,7 @@ def test_no_deepseek_key_skips_extraction_and_finishes_at_tier0(db, tmp_path: Pa
     assert run.counters["tier1_calls"] == 0
     # tier-0 still ran
     assert run.counters["tier0_elements"] >= 1
+    get_settings.cache_clear()  # don't leak the forced-keyless Settings singleton
 
 
 def test_enabled_path_writes_job_row_and_counters(db, tmp_path: Path, monkeypatch):

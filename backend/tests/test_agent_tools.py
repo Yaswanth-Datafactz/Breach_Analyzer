@@ -183,7 +183,7 @@ def test_decide_bulk_merge_stops_at_approval_gate(db, env):
     run = AgentRunRepository(db).create(
         agent_kind="adjudicator",
         trigger={},
-        model="gpt-5.6-sol",
+        model="gpt-5.5",
         budget_max_steps=10,
         budget_max_tokens=None,
         budget_max_usd=0.30,

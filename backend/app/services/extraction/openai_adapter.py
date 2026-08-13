@@ -2,9 +2,12 @@
 (docs/plan.md D3, revised 2026-08-12: Anthropic swapped out for OpenAI --
 no Anthropic key is available in this environment, only an OpenAI one; see
 core/config.py's OpenAI settings block for the model choice + a pricing
-citation). Structure mirrors deepseek.py: same ExtractionAdapter ABC, same
-"return raw dict + usage, validation happens in exactly one place" contract
-(base.py).
+citation. REVISED AGAIN 2026-08-13: that key is an Azure AI Foundry
+resource key, confirmed live -- this adapter's client is AsyncAzureOpenAI,
+not AsyncOpenAI, see __init__ and config.py's OpenAI settings block for the
+full endpoint-discovery story). Structure mirrors deepseek.py: same
+ExtractionAdapter ABC, same "return raw dict + usage, validation happens in
+exactly one place" contract (base.py).
 
 Named openai_adapter.py, not openai.py -- a module in this package sharing
 the `openai` SDK's own name would risk shadowing `import openai` below
@@ -36,8 +39,8 @@ community reports on 2026-08-12 rather than assumed:
   confirmed against gpt-4o). Moot for THIS adapter regardless (next
   point), but it is why Chat Completions remains the right base even if a
   future model in this family restores logprobs.
-- No logprobs, no temperature/top_p: gpt-5.6-sol/terra are reasoning
-  models, and OpenAI's reasoning-models guide plus multiple 2026 community
+- No logprobs, no temperature/top_p: gpt-5.5 is a reasoning model, and
+  OpenAI's reasoning-models guide plus multiple 2026 community
   reports document `logprobs` / `top_logprobs` / `temperature` / `top_p` /
   the penalty params as UNSUPPORTED on reasoning models via Chat
   Completions -- sending them 400s. This adapter never sends them.
@@ -103,10 +106,9 @@ community reports on 2026-08-12 rather than assumed:
 - The system role is sent as `role: "system"`. OpenAI's docs name
   `"developer"` as the newer preferred role name for reasoning models but
   every reasoning-model generation so far (o1 onward) has kept accepting
-  `"system"` as a backward-compatible alias; this was NOT independently
-  re-verified against gpt-5.6 specifically (no live call available) --
-  flagged here rather than silently assumed permanent; a one-line change
-  if the live spike finds otherwise.
+  `"system"` as a backward-compatible alias; CONFIRMED live against this
+  gpt-5.5 deployment 2026-08-13 (every probe call used `role: "system"`
+  and succeeded) -- no longer a standing assumption.
 
 NO live call happens anywhere in tests: tests inject a fake client object
 exposing `chat.completions.create` (the SDK client's exact surface), same
@@ -140,6 +142,8 @@ class OpenAIExtractionAdapter(ExtractionAdapter):
     def __init__(
         self,
         api_key: str,
+        base_url: str,
+        api_version: str,
         model: str,
         client: openai.AsyncOpenAI | None = None,
         max_completion_tokens: int = _MAX_COMPLETION_TOKENS,
@@ -148,8 +152,14 @@ class OpenAIExtractionAdapter(ExtractionAdapter):
         self._max_completion_tokens = max_completion_tokens
         # Tests inject a fake client exposing `chat.completions.create` --
         # request/response shape is verified without ever making a live call.
-        self._client = client or openai.AsyncOpenAI(
-            api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS
+        # Real construction (2026-08-13 revision) is AsyncAzureOpenAI, not
+        # AsyncOpenAI -- this adapter's key is an Azure AI Foundry resource
+        # key, confirmed live (see model_client.py + config.py's OpenAI
+        # settings block for the full endpoint-discovery story; this
+        # extraction adapter and the agent runner's model client hit the
+        # same Foundry resource, same deployment).
+        self._client = client or openai.AsyncAzureOpenAI(
+            api_key=api_key, azure_endpoint=base_url, api_version=api_version, timeout=_REQUEST_TIMEOUT_SECONDS
         )
 
     async def extract_text(self, *, system_prompt: str, user_prompt: str, schema_json: dict) -> ExtractionResult:

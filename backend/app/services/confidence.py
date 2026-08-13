@@ -11,7 +11,7 @@ Signals (each in [0,1], weighted, renormalized around whatever is
 unavailable -- UC2's rule; an absent signal must not silently count as 0
 or a tier whose model exposes no logprobs would be structurally penalized
 against one that does. Revised 2026-08-12 (docs/plan.md D3 swap): tier 2
-is now gpt-5.6-terra, a reasoning model that rejects logprobs outright
+is now gpt-5.5, a reasoning model that rejects logprobs outright
 (extraction/openai_adapter.py's docstring) -- the exact same signal-loss
 SHAPE the retired Anthropic tier 2 already had (it never exposed logprobs
 at all), for a different root cause. This mechanism needed no change for
@@ -84,7 +84,7 @@ class ElementSignals:
 def logprob_signal(logprobs: list[dict] | None) -> float | None:
     """Geometric-mean token probability of a response: exp(mean(logprob)).
     Provider-native token dicts in, one [0,1] scalar out; None when the
-    provider/model exposed no logprobs (gpt-5.6-terra, a reasoning model;
+    provider/model exposed no logprobs (gpt-5.5, a reasoning model;
     the retired Anthropic tier 2 never exposed them either) or the shape
     is empty -- None, never 0.0, so renormalization can do its job."""
     if not logprobs:

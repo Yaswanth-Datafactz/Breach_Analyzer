@@ -7,14 +7,24 @@ this package ever makes a live call implicitly.
 Revised 2026-08-12 (docs/plan.md D3 swap): Anthropic replaced with OpenAI --
 no Anthropic key is available in this environment, only an OpenAI one; see
 core/config.py's OpenAI settings block for the model/pricing citation.
+REVISED AGAIN 2026-08-13: that OpenAI key is an Azure AI Foundry resource
+key (the same resource DeepSeek uses), not a platform.openai.com key --
+confirmed live. The client is `openai.AzureOpenAI`, not `openai.OpenAI`,
+constructed with `azure_endpoint`/`api_version` from config alongside the
+key; `chat.completions.create`'s call shape and this module's whole IR
+translation are UNCHANGED, since Azure's classic deployments API is the
+same Chat-Completions shape as the real one (config.py's OpenAI settings
+block has the full endpoint-discovery story).
 OpenAI specifics kept in this one adapter:
-- agent model comes from config (`agent_model`, gpt-5.6-sol by default;
-  per-agent downgrade is a config change -- docs/plan.md D3).
-- gpt-5.6-sol is a REASONING model: the adapter passes NO sampling params
+- agent model comes from config (`agent_model`, "gpt-5.5" -- the one
+  deployment that exists on this Foundry resource; per-agent downgrade to
+  a second deployment is a config change -- docs/plan.md D3).
+- gpt-5.5 is a REASONING model: the adapter passes NO sampling params
   (temperature/top_p are rejected with a 400, same shape opus-5's thinking
-  mode had -- confirmed against OpenAI's reasoning-models guide, see
-  extraction/openai_adapter.py's docstring for the fuller citation) and
-  uses `max_completion_tokens`, not the legacy `max_tokens`.
+  mode had -- confirmed live against the real deployment, and against
+  OpenAI's reasoning-models guide, see extraction/openai_adapter.py's
+  docstring for the fuller citation) and uses `max_completion_tokens`, not
+  the legacy `max_tokens`.
 - prompt caching is automatic and server-side for OpenAI -- there is no
   cache_control breakpoint to set (unlike the retired Anthropic adapter);
   simply gone, not replaced (same note as extraction/openai_adapter.py).
@@ -259,10 +269,15 @@ class OpenAIModelClient:
 
     is_scripted = False
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, azure_endpoint: str, api_version: str):
         import openai
 
-        self._client = openai.OpenAI(api_key=api_key, timeout=_REQUEST_TIMEOUT_SECONDS)
+        self._client = openai.AzureOpenAI(
+            api_key=api_key,
+            azure_endpoint=azure_endpoint,
+            api_version=api_version,
+            timeout=_REQUEST_TIMEOUT_SECONDS,
+        )
 
     def create_turn(
         self,
@@ -277,8 +292,8 @@ class OpenAIModelClient:
             max_completion_tokens=_MAX_COMPLETION_TOKENS,
             tools=tools,
             messages=_to_openai_messages(system, messages),
-            # No temperature/top_p -- gpt-5.6-sol/terra are reasoning
-            # models and reject sampling params (core/config.py).
+            # No temperature/top_p -- gpt-5.5 is a reasoning model and
+            # rejects sampling params (core/config.py).
         )
         choice = response.choices[0]
         message = choice.message
@@ -319,4 +334,4 @@ def real_model_client_or_none() -> OpenAIModelClient | None:
     settings = get_settings()
     if not settings.openai_api_key:
         return None
-    return OpenAIModelClient(settings.openai_api_key)
+    return OpenAIModelClient(settings.openai_api_key, settings.openai_base_url, settings.openai_api_version)

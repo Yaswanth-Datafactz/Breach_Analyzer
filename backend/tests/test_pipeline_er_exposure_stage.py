@@ -113,7 +113,16 @@ def test_auto_trigger_parity_with_manual_call(db, tmp_path: Path, monkeypatch):
     assert manual_er.gray_items == run.counters["gray_pairs"]
 
 
-def test_keyless_run_auto_triggers_with_zero_mentions(db, tmp_path: Path):
+def test_keyless_run_auto_triggers_with_zero_mentions(db, tmp_path: Path, monkeypatch):
+    # Force the keyless precondition explicitly rather than assume it of the
+    # ambient dev environment -- a real DEEPSEEK_API_KEY in .env (a live-run
+    # prerequisite, not a test-hygiene one) must never flip this test's
+    # meaning. monkeypatch reverts the env var automatically; the cache
+    # still needs clearing on both sides so this test neither reads a
+    # pre-existing keyed Settings singleton nor leaves a keyless one behind
+    # for whatever runs next (get_settings is a process-wide lru_cache).
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "")
+    get_settings.cache_clear()
     settings = get_settings()
     assert settings.deepseek_api_key == "", "test requires the keyless dev default"
     (tmp_path / "memo.txt").write_bytes(b"Just some ordinary text, no PII markers here.")
@@ -134,6 +143,7 @@ def test_keyless_run_auto_triggers_with_zero_mentions(db, tmp_path: Path):
     assert run.counters["flags"] == 0
     assert run.counters["gray_pairs"] == 0
     assert "er_exposure_error" not in run.counters
+    get_settings.cache_clear()  # don't leak the forced-keyless Settings singleton
 
     assert (
         db.scalar(select(func.count()).select_from(Person).where(Person.run_id == run_id)) == 0

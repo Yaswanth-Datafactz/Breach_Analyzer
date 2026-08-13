@@ -116,7 +116,7 @@ class ManifestFakeAdapter(ExtractionAdapter):
     THEN tops up with whatever of the active document's plantings remain
     un-emitted, i.e. it assumes a real vision-capable model reads the
     clean page image rather than the OCR transcription. This is
-    optimistic relative to what a real gpt-5.6-terra vision call would
+    optimistic relative to what a real gpt-5.5 vision call would
     recover (which could still misread a genuinely bad scan) -- but with
     no live keys available there is no way to simulate actual vision-model
     behavior, and the effect is scoped ONLY to whichever documents reach
