@@ -72,6 +72,17 @@ class CostEventRepository:
             is not None
         )
 
+    def total_cost_for_run(self, run_id: uuid.UUID) -> float:
+        """Real-time cumulative spend for a run, across every purpose/model
+        (extraction AND agents) -- the read side of pipeline.py's run-level
+        cost ceiling (settings.run_max_cost_usd). A plain SUM, not the
+        grouped summary_for_run -- called once per completed document while
+        a run is live, so it stays a single cheap indexed aggregate."""
+        value = self.db.scalar(
+            select(func.coalesce(func.sum(CostEvent.cost_usd), 0)).where(CostEvent.run_id == run_id)
+        )
+        return float(value or 0)
+
     def summary_for_run(self, run_id: uuid.UUID) -> list[CostSummaryRow]:
         rows = self.db.execute(
             select(

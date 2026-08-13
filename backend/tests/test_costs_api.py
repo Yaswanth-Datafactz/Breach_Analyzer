@@ -117,6 +117,20 @@ def test_summary_math_per_purpose_model(client, headers, seeded_run):
     assert totals["cache_hit_rate"] == pytest.approx(2300 / 8000, abs=1e-4)
 
 
+def test_total_cost_for_run_matches_the_grouped_summary(db, seeded_run):
+    """The plain-SUM read pipeline.py's run_max_cost_usd ceiling polls after
+    every completed document -- must agree with the grouped summary's own
+    total (same $0.09 across the same 4 seeded events), not a separate
+    number that could quietly drift from what /costs/summary reports."""
+    assert CostEventRepository(db).total_cost_for_run(seeded_run.id) == pytest.approx(0.09)
+
+
+def test_total_cost_for_run_is_zero_for_a_run_with_no_events(db):
+    run = ProcessingRunRepository(db).create(config_snapshot={"corpus_path": "/tmp/unused"})
+    db.commit()
+    assert CostEventRepository(db).total_cost_for_run(run.id) == 0.0
+
+
 def test_extrapolation_math_and_sensitivity(client, headers, seeded_run):
     response = client.get(
         f"/api/v1/costs/extrapolation?run_id={seeded_run.id}&scale=1000", headers=headers

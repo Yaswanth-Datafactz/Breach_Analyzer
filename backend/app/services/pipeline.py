@@ -70,6 +70,7 @@ from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.db.models import Document, ExtractionJob, ProcessingRun
 from app.db.session import SessionLocal
+from app.repositories.cost_events import CostEventRepository
 from app.repositories.documents import DocumentRepository
 from app.repositories.passages import PassageRepository
 from app.repositories.pii_elements import PiiElementRepository
@@ -870,6 +871,29 @@ async def run_processing_run(run_id: uuid.UUID) -> None:
                     # Children queue behind the current batch -- recursion
                     # terminates because every level ingests new sha256s only.
                     pending.extend(outcome.child_queued_ids)
+
+                    # Run-level cost ceiling (config.py's run_max_cost_usd
+                    # docstring has the full contract): checked after EVERY
+                    # completed document, not just between waves, because
+                    # ingest.queued_ids can hand the very first wave nearly
+                    # the whole corpus at once -- a between-waves check
+                    # would let that entire wave run over budget unchecked.
+                    # Reuses the exact keyless degrade-gracefully path: flip
+                    # extraction_enabled, remaining documents (including
+                    # ones already queued behind the semaphore) finish at
+                    # tier-0 depth instead of failing or halting the run.
+                    if (
+                        extraction_enabled
+                        and settings.run_max_cost_usd is not None
+                        and CostEventRepository(db).total_cost_for_run(run_id)
+                        >= settings.run_max_cost_usd
+                    ):
+                        extraction_enabled = False
+                        logger.info(
+                            "extraction_budget_ceiling_reached",
+                            run_id=str(run_id),
+                            ceiling_usd=settings.run_max_cost_usd,
+                        )
 
             _run_er_and_exposure_stage(db, processing, run, run_id, counters)
 

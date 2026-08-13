@@ -105,6 +105,33 @@ class Settings(BaseSettings):
     tier2_model: str = "gpt-5.5"
     agent_model: str = "gpt-5.5"
 
+    # Run-level EXTRACTION cost ceiling (added 2026-08-13 for the first live
+    # keyed run -- a real technical guarantee, not an estimate, and
+    # HARDWIRED to $20 by explicit user instruction, not left as an
+    # easy-to-forget runtime knob: the default below IS the safety net,
+    # present even if no env var is ever set). None disables the ceiling
+    # entirely (unlimited) -- an explicit opt-out for whoever changes this
+    # later, never the default. When active, pipeline.py's per-document
+    # dispatch loop checks real cumulative cost_events spend after every
+    # completed document (repositories/cost_events.py's total_cost_for_run)
+    # and, once the ceiling is reached, flips extraction off for all
+    # documents not yet dispatched -- the EXACT SAME degrade-gracefully
+    # path already used for "no DEEPSEEK_API_KEY configured" (remaining
+    # documents still reach `done` at tier-0 depth, nothing silently
+    # dropped). This is an extraction-only ceiling: it does not cover
+    # agent-layer spend, which is already separately bounded by the
+    # per-agent-run budgets below (orchestrator/investigator/adjudicator/
+    # auditor each cap their own USD spend independently) -- the two pools
+    # are dispatched separately (agents are never auto-triggered from the
+    # pipeline run) and are budgeted separately for the same reason.
+    # Concurrent in-flight documents (extraction_max_concurrency, default
+    # 3-5) can each start before the ceiling check catches up, so actual
+    # extraction spend can overshoot this value by a small, bounded
+    # amount -- headroom for that, plus agent spend on top, is why the
+    # live run this was built for keeps total spend well clear of $20,
+    # not flush against it.
+    run_max_cost_usd: float | None = 20.0
+
     # Tier escalation threshold theta (docs/plan.md §9): composite confidence
     # below this escalates a tier-1 extraction to tier 2. Config A "economy"
     # runs 0.6, Config B "assurance" runs 0.8 -- both measured Friday.
