@@ -7,9 +7,9 @@ Two modes:
 (a) FRESH RUN, config profile "economy" | "assurance" -- drives the real
     pipeline (services/pipeline.run_processing_run) over a given corpus
     dir with that profile's thresholds applied AND a manifest-driven FAKE
-    tier-1/tier-2 adapter standing in for DeepSeek/Claude (see
+    tier-1/tier-2 adapter standing in for DeepSeek/OpenAI (see
     `ManifestFakeAdapter` below) so Config A/B comparisons are possible
-    TODAY, before ANTHROPIC_API_KEY/DEEPSEEK_API_KEY land in backend/.env
+    TODAY, before OPENAI_API_KEY/DEEPSEEK_API_KEY land in backend/.env
     -- zero live LLM calls, a real (non-vacuous) accuracy signal because
     the fake adapter can only "find" a value that is verbatim in the text
     the real parse/OCR pipeline actually produced.
@@ -116,9 +116,9 @@ class ManifestFakeAdapter(ExtractionAdapter):
     THEN tops up with whatever of the active document's plantings remain
     un-emitted, i.e. it assumes a real vision-capable model reads the
     clean page image rather than the OCR transcription. This is
-    optimistic relative to what a real Claude vision call would recover
-    (which could still misread a genuinely bad scan) -- but with no live
-    keys available there is no way to simulate actual vision-model
+    optimistic relative to what a real gpt-5.6-terra vision call would
+    recover (which could still misread a genuinely bad scan) -- but with
+    no live keys available there is no way to simulate actual vision-model
     behavior, and the effect is scoped ONLY to whichever documents reach
     the vision path (Config "economy" never calls extract_image at all,
     so this cannot inflate its numbers -- only "assurance"'s). Restated in

@@ -30,9 +30,10 @@ def test_all_signals_available_full_agreement_scores_high():
 
 
 def test_unavailable_signals_renormalize_not_zero():
-    # The Anthropic tier exposes no logprobs; medical/address have no
-    # validator and no tier-0 detector. Grounding alone must then be worth
-    # 1.0, not 0.15 -- an absent signal is absent, never a silent zero.
+    # The tier-2 reasoning model (gpt-5.6-terra) exposes no logprobs;
+    # medical/address have no validator and no tier-0 detector. Grounding
+    # alone must then be worth 1.0, not 0.15 -- an absent signal is absent,
+    # never a silent zero.
     signals = ElementSignals(grounded=True, logprob=None, tier0_agreement=None, validator_status=None)
     assert composite_confidence(signals) == 1.0
 

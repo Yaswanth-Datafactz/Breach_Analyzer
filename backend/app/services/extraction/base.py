@@ -3,7 +3,7 @@ from Document_Extraction/backend/app/services/extraction/base.py (UC2). All
 concrete adapters return the SAME `ExtractionResult` shape -- a raw
 (unvalidated) dict plus usage/logprobs -- so validation has exactly one path
 regardless of which provider produced it (tier 1 DeepSeek here now; tier 2
-Claude lands in extraction/claude.py with its service, phase B2).
+OpenAI lands in extraction/openai_adapter.py with its service, phase B2).
 """
 
 from __future__ import annotations
@@ -25,10 +25,13 @@ class ExtractionResult:
     usage: ExtractionUsage
     # Per-token logprobs, provider-native shape, kept opaque here -- the
     # confidence composite interprets these. DeepSeek populates this (its
-    # API exposes logprobs); the Anthropic tier does not expose logprobs, so
-    # its adapter leaves this None and the composite renormalizes -- the
-    # exact signal-loss UC2 documented for its tier 2, accepted with eyes
-    # open again (docs/plan.md D3).
+    # API exposes logprobs); the OpenAI tier-2 adapter's models are
+    # reasoning models that reject the logprobs parameter outright (see
+    # extraction/openai_adapter.py's module docstring), so that adapter
+    # leaves this None and the composite renormalizes -- the exact
+    # signal-loss UC2 documented for its tier 2, accepted with eyes open
+    # again (docs/plan.md D3), now for a provider-specific reason instead
+    # of an API-wide one.
     logprobs: list[dict] | None = None
 
 

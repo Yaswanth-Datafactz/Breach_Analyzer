@@ -47,7 +47,7 @@ def client():
 def keyless(monkeypatch):
     """POST /agents/runs must 409 without a key -- force the condition even
     if the developer's .env happens to carry one."""
-    monkeypatch.setattr(get_settings(), "anthropic_api_key", "")
+    monkeypatch.setattr(get_settings(), "openai_api_key", "")
 
 
 def _finished_run(db, env):
@@ -73,8 +73,8 @@ def test_dispatch_without_key_returns_409_envelope(client, keyless):
     assert response.status_code == 409
     body = response.json()
     assert body["error"]["type"] == "conflict"
-    assert "ANTHROPIC_API_KEY" in body["error"]["message"]
-    assert body["error"]["details"]["missing"] == "ANTHROPIC_API_KEY"
+    assert "OPENAI_API_KEY" in body["error"]["message"]
+    assert body["error"]["details"]["missing"] == "OPENAI_API_KEY"
 
 
 def test_dispatch_requires_auth(client):

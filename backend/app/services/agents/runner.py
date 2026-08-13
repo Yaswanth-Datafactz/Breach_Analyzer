@@ -37,9 +37,9 @@ from app.services.agents.model_client import ModelClient, ModelToolCall, tool_re
 from app.services.agents.tools import (
     ToolContext,
     ToolResult,
-    anthropic_tool_definitions,
     apply_approved_action,
     jsonable,
+    openai_tool_definitions,
     run_tool,
 )
 from app.services.agents.traces import TraceRecorder
@@ -214,7 +214,7 @@ class AgentRunner:
         messages: list[dict],
     ) -> AgentRun:
         trace = TraceRecorder(db, run)
-        tools = anthropic_tool_definitions(list(definition.tool_names))
+        tools = openai_tool_definitions(list(definition.tool_names))
         run_scope, doc_scope = _scope_ids(db, ctx.trigger)
         while True:
             dimension = budget.exceeded_dimension(run)
@@ -234,7 +234,7 @@ class AgentRunner:
                 cost_usd=step_cost_usd(
                     run.model, turn.input_tokens, turn.output_tokens, turn.cached_input_tokens
                 ),
-                tool_names=[t["name"] for t in tools],
+                tool_names=[t["function"]["name"] for t in tools],
                 message_count=len(messages),
                 run_id=run_scope,
                 document_id=doc_scope,

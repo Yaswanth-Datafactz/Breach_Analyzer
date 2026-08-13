@@ -12,7 +12,7 @@ latest_campaign_state(). Application only ever mutates run priorities and
 thresholds -- nothing else.
 
 Trigger wiring: the pipeline's checkpoint hook calls dispatch_checkpoint(),
-which is a logged NO-OP without ANTHROPIC_API_KEY -- a keyless environment
+which is a logged NO-OP without OPENAI_API_KEY -- a keyless environment
 runs the whole pipeline with zero model calls and zero crashes.
 """
 
@@ -159,7 +159,7 @@ def latest_campaign_state(db: Session, run_id: uuid.UUID) -> dict:
 
 
 def dispatch_checkpoint(db: Session, run_id: uuid.UUID, checkpoint: str) -> AgentRun | None:
-    """The pipeline's checkpoint hook target. Without ANTHROPIC_API_KEY this
+    """The pipeline's checkpoint hook target. Without OPENAI_API_KEY this
     is a logged no-op (docs/plan.md: keyless runs are config-only away from
     live) -- the pipeline never learns the difference."""
     from app.services.agents.model_client import real_model_client_or_none
@@ -170,7 +170,7 @@ def dispatch_checkpoint(db: Session, run_id: uuid.UUID, checkpoint: str) -> Agen
             "orchestrator_checkpoint_skipped",
             run_id=str(run_id),
             checkpoint=checkpoint,
-            reason="no ANTHROPIC_API_KEY",
+            reason="no OPENAI_API_KEY",
         )
         return None
     trigger = {"run_id": str(run_id), "checkpoint": checkpoint}

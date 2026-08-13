@@ -1,5 +1,8 @@
-# Mirrors UC2's backend/requirements.txt, minus openai (UC3's tier 2 and
-# agents are Anthropic -- docs/plan.md D3), plus the UC3-specific set below.
+# Mirrors UC2's backend/requirements.txt, plus the UC3-specific set below.
+# UC3's tier 2 + agents were originally Anthropic (docs/plan.md D3); revised
+# 2026-08-12 to OpenAI -- see core/config.py's OpenAI settings block and
+# services/extraction/openai_adapter.py's module docstring for the swap
+# rationale and price citations.
 # corpusgen/ shares this environment (docs/plan.md §8's renderers are the
 # reportlab/pikepdf/docx/openpyxl/faker entries). corpusgen/requirements.txt
 # was merged in here and deleted (its pins win for faker/reportlab/
@@ -25,7 +28,27 @@ pillow==11.0.0
 rapidfuzz==3.10.1
 python-multipart==0.0.20
 # UC3 additions
-anthropic==0.116.0
+# openai: tier-2 extraction (extraction/openai_adapter.py) + the agent layer
+# (services/agents/model_client.py). Version verified live 2026-08-13
+# against https://pypi.org/project/openai/ (JSON API + project page, two
+# independent fetches) -- house rule is never quote an unverified version.
+# PyPI's actual latest at verification time is 3.0.0 (released 2026-08-12,
+# one day old, a major-version bump with zero secondary corroboration
+# found yet -- see the WebSearch turn up empty for it). Pinned instead to
+# 2.54.0: also real and PyPI-listed (not guessed), and it is the exact
+# version already installed and working in this project's own backend/
+# .venv (confirmed via `python -c "import openai; print(openai.__version__)"`
+# in that venv) against the Chat Completions surface this adapter actually
+# uses (structured outputs, max_completion_tokens, prompt_tokens_details).
+# Revisit the 3.0.0 upgrade deliberately, with a live re-verify, once there
+# is time to spare -- not folded in silently here.
+openai==2.54.0
+# anthropic pin removed 2026-08-13: services/agents/model_client.py now
+# defines OpenAIModelClient (`import openai`, lazy inside __init__) --
+# `class AnthropicModelClient` / `import anthropic` are gone (grep-
+# verified across backend/app, backend/tests, backend/scripts,
+# backend/mcp_server.py: zero hits outside this historical comment).
+# Nothing in the running system imports the anthropic package anymore.
 jellyfish==1.1.3
 pikepdf==9.4.2
 extract-msg==0.52.0

@@ -44,7 +44,7 @@ _IMAGE_OMITTED_NOTE = (
 def _wrapper_for(spec: ToolSpec) -> Callable:
     """A callable whose signature mirrors the tool's Pydantic args model, so
     FastMCP's schema derivation (which reads function signatures) reproduces
-    the exact schema the native Anthropic facade publishes."""
+    the exact schema the native OpenAI facade publishes."""
 
     def wrapper(**kwargs):
         args = spec.args_model.model_validate(kwargs)
@@ -72,7 +72,7 @@ def _wrapper_for(spec: ToolSpec) -> Callable:
     for field_name, field in spec.args_model.model_fields.items():
         # Carry the field's constraint metadata (ge/le/min_length/...) into
         # the annotation so the derived MCP schema advertises the same
-        # bounds the native Anthropic facade does.
+        # bounds the native OpenAI facade does.
         annotation: object = field.annotation
         for constraint in field.metadata:
             annotation = Annotated[annotation, constraint]

@@ -16,10 +16,11 @@ than UC2's invoices were.
 
 Ordering is deliberate and load-bearing (docs/plan.md §9): the stable
 system prompt (instructions + schema) comes FIRST and the volatile passage
-comes LAST in the user message, so provider-side prefix caching (Anthropic's
-explicit cache_control at tier 2; DeepSeek-side caching measured at ZERO
-hits through Foundry in the spike -- kept for tier-2 value and never banked
-in extrapolations per D9) gets the longest possible stable prefix.
+comes LAST in the user message, so provider-side prefix caching (OpenAI's
+automatic, no-code-required prefix caching at tier 2 -- extraction/
+openai_adapter.py's module docstring; DeepSeek-side caching measured at
+ZERO hits through Foundry in the spike -- kept for tier-2 value and never
+banked in extrapolations per D9) gets the longest possible stable prefix.
 
 Field names below are built directly from the Pydantic models in
 schemas.py, never hand-retyped -- UC2's fix for a real, live-verified bug:

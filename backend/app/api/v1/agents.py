@@ -1,9 +1,10 @@
 """/agents (docs/plan.md §5): observe agent runs (list, full trace with
 budget usage), dispatch runs manually, and work the human approval gates.
 
-Dispatch is LIVE-ONLY: POST /agents/runs requires ANTHROPIC_API_KEY and
-answers 409 with the standard error envelope when it is absent -- never a
-crash, never a silent fake run (docs/plan.md: the keyed run is config-only).
+Dispatch is LIVE-ONLY: POST /agents/runs requires OPENAI_API_KEY (docs/
+plan.md D3 swap, 2026-08-12: Anthropic replaced with OpenAI) and answers
+409 with the standard error envelope when it is absent -- never a crash,
+never a silent fake run (docs/plan.md: the keyed run is config-only).
 Approval decisions resume a parked run inline when its scripted client is
 still in this process; live-client runs are marked resumable instead of
 blocking the HTTP request on a minutes-long model loop.
@@ -137,7 +138,7 @@ def _execute_dispatched_run(agent_run_id: uuid.UUID, kind: str, budget: Budget) 
     status_code=status.HTTP_202_ACCEPTED,
     responses={
         409: {
-            "description": "Live dispatch requires ANTHROPIC_API_KEY",
+            "description": "Live dispatch requires OPENAI_API_KEY",
             "model": ErrorEnvelope,
         }
     },
@@ -148,12 +149,12 @@ def dispatch_agent_run(
     db: Session = Depends(get_db),
 ) -> AgentRunOut:
     settings = get_settings()
-    if not settings.anthropic_api_key:
+    if not settings.openai_api_key:
         raise ConflictError(
-            "Live agent dispatch requires ANTHROPIC_API_KEY. Set it in backend/.env "
+            "Live agent dispatch requires OPENAI_API_KEY. Set it in backend/.env "
             "and restart -- no code change is needed; without a key the agent layer "
             "runs only against scripted clients (tests/demo traces).",
-            details={"kind": body.kind, "missing": "ANTHROPIC_API_KEY"},
+            details={"kind": body.kind, "missing": "OPENAI_API_KEY"},
         )
     unit_count = len(body.trigger.get("flag_ids", [])) if body.kind == "auditor" else 1
     budget = with_overrides(

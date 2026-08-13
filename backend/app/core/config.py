@@ -1,7 +1,7 @@
 """Environment-driven application settings (Handbook §6.2: config via env vars).
 
 Shape copied from Document_Extraction/backend/app/core/config.py (UC2). New
-settings groups UC2 didn't need: the Anthropic tier-2/agent models (docs/
+settings groups UC2 didn't need: the OpenAI tier-2/agent models (docs/
 plan.md D3), the ER band thresholds (D5), and the per-agent budget defaults
 (docs/plan.md §3's agent table) -- all live here, versioned, so a price
 change or a threshold recalibration is a config diff, not a doc rewrite.
@@ -43,14 +43,34 @@ class Settings(BaseSettings):
     deepseek_api_version: str = "2024-05-01-preview"
     deepseek_model: str = "DeepSeek-V3.2"
 
-    # Anthropic -- tier 2 escalation (text + vision) and the agent layer
-    # (docs/plan.md D3: one provider keeps traces/pricing uniform, and native
-    # tool use is the surface the agent runner is built on). `agent_model` is
-    # a config knob precisely so the cost/accuracy comparison can downgrade
-    # agents (e.g. to claude-sonnet-4-6) without a code change.
-    anthropic_api_key: str = ""
-    tier2_model: str = "claude-sonnet-4-6"
-    agent_model: str = "claude-opus-5"
+    # OpenAI -- tier 2 escalation (text + vision) and the agent layer
+    # (docs/plan.md D3, revised 2026-08-12: swapped in for Anthropic -- no
+    # Anthropic key is available in this environment, only an OpenAI one.
+    # One provider still keeps traces/pricing uniform; OpenAI's function/
+    # tool-calling API (chat.completions with `tools=[...]`) is the
+    # equivalent capability the agent runner is built on -- see
+    # services/agents/model_client.py's OpenAIModelClient for the
+    # translation layer). `tier2_model` mirrors the old sonnet role
+    # (cheaper, escalation + vision); `agent_model` mirrors the old opus
+    # role (strongest, judgment-heavy tool use) and stays a config knob so
+    # the cost/accuracy comparison can downgrade agents (e.g. to
+    # gpt-5.6-luna) without a code change. Prices verified 2026-08-12
+    # against https://developers.openai.com/api/docs/pricing (the current
+    # redirect target of platform.openai.com/docs/pricing) -- gpt-5.6 is
+    # OpenAI's current flagship generation, three tiers named sol/terra/
+    # luna mirroring exactly the old opus/sonnet/haiku split (confirmed via
+    # https://openai.com/index/gpt-5-6/: "gpt-5.6 alias routes ... to
+    # gpt-5.6-sol, the model for flagship capability. Use gpt-5.6-terra for
+    # strong performance at a lower price and gpt-5.6-luna for efficient,
+    # high-volume workloads."). Both are reasoning models: no temperature/
+    # top_p/logprobs (see MODEL_PRICES_USD_PER_MTOK's note and
+    # services/confidence.py) -- the exact same "no sampling knobs" shape
+    # opus-5 had, confirmed via OpenAI's own reasoning-models guide
+    # (developers.openai.com/api/docs/guides/reasoning) and community
+    # reports of 400s on those params for GPT-5.x reasoning models.
+    openai_api_key: str = ""
+    tier2_model: str = "gpt-5.6-terra"
+    agent_model: str = "gpt-5.6-sol"
 
     # Tier escalation threshold theta (docs/plan.md §9): composite confidence
     # below this escalates a tier-1 extraction to tier 2. Config A "economy"
@@ -130,21 +150,42 @@ class Settings(BaseSettings):
 
 # Per-model price table, USD per 1M tokens. DeepSeek is keyed by Foundry
 # DEPLOYMENT name (UC2's convention -- matches what config puts in
-# `extraction_jobs.model` and `cost_events.model`); Anthropic models by
-# their API model id.
+# `extraction_jobs.model` and `cost_events.model`); OpenAI models by their
+# API model id.
 #
 # DeepSeek figures carried over from UC2's table (third-party-aggregator-
 # sourced there, pending direct Azure-billing confirmation -- see UC2's
-# core/config.py). Anthropic figures verified against the local claude-api
-# skill reference (model table cached 2026-06-24: opus-5 $5/$25,
-# sonnet-4-6 $3/$15, haiku-4-5 $1/$5; cache reads ~0.1x input).
-# Re-verify ALL of these against the providers' own pricing pages before
-# Friday's report (docs/plan.md D3: never quote unverified).
+# core/config.py).
+#
+# OpenAI figures verified live 2026-08-12 against
+# https://developers.openai.com/api/docs/pricing (platform.openai.com/docs/
+# pricing redirects there; openai.com/api/pricing itself 403'd to this
+# fetch tool -- the developers.openai.com page is the same provider-owned
+# pricing source, just the current URL). Table below is the exact reading
+# at that time; no figure here is carried over or guessed. Superseded
+# claude-sonnet-4-6/claude-opus-5/claude-haiku-4-5 entries removed outright
+# (docs/plan.md D3 swap to OpenAI, 2026-08-12) -- nothing in the running
+# system will ever hit an Anthropic model id again, so keeping them
+# commented out would be dead weight, not a useful history (docs/plan.md
+# itself is the historical record of the swap).
+#
+# gpt-5.6-sol has NO published cached-input discount distinct from input in
+# the source table beyond the ratio below (cached_input is the table's own
+# separate "Cached Input" column, not derived) -- reasoning models (D3
+# comment above): no logprobs, no temperature/top_p (services/confidence.py
+# renormalizes around the missing logprob signal exactly as it did for
+# Anthropic, for this new reason).
+# Re-verify ALL of these again against the providers' own pricing pages
+# before Friday's report if any more time elapses (docs/plan.md D3: never
+# quote unverified) -- prices move fast on frontier models.
 MODEL_PRICES_USD_PER_MTOK: dict[str, dict[str, float]] = {
     "DeepSeek-V3.2": {"input": 0.58, "output": 1.68},
-    "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cached_input": 0.30},
-    "claude-opus-5": {"input": 5.00, "output": 25.00, "cached_input": 0.50},
-    "claude-haiku-4-5": {"input": 1.00, "output": 5.00, "cached_input": 0.10},
+    "gpt-5.6-sol": {"input": 5.00, "output": 30.00, "cached_input": 0.50},
+    "gpt-5.6-terra": {"input": 2.00, "output": 12.00, "cached_input": 0.20},
+    # Cheapest current tier -- kept available (unused by default) purely so
+    # `agent_model`/`tier2_model` can be downgraded to it for the cost/
+    # accuracy comparison, the exact role claude-haiku-4-5 played before.
+    "gpt-5.6-luna": {"input": 0.20, "output": 1.20, "cached_input": 0.02},
 }
 
 

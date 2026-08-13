@@ -2,7 +2,7 @@
 
 DataFactZ AI Engineering Internship capstone. Ingests a synthetic breach corpus (500+
 mixed-format documents), extracts personal data elements with cost-tiered routing
-(deterministic detectors → DeepSeek → Claude escalation), resolves them to unique individuals,
+(deterministic detectors → DeepSeek → OpenAI escalation), resolves them to unique individuals,
 and produces a defensible exposure table — one row per person, per-category exposure flags,
 every flag traceable to the exact source passage. A deterministic pipeline handles the bulk
 path; four budgeted, fully-traced agents (orchestrator, exception investigator,
@@ -13,8 +13,8 @@ consequential actions.
 
 FastAPI · PostgreSQL 16 (SQLAlchemy 2 + Alembic) · React 19 + Vite + Tailwind v4 ·
 PyMuPDF / Tesseract OCR / python-docx / openpyxl · DeepSeek-V3.2 (tier 1) ·
-claude-sonnet-4-6 (tier 2, text+vision) · claude-opus-5 (agents) · hand-rolled agent loop on
-Anthropic native tool use with an MCP facade for dev-time tooling.
+gpt-5.6-terra (tier 2, text+vision) · gpt-5.6-sol (agents) · hand-rolled agent loop on
+OpenAI native tool use with an MCP facade for dev-time tooling.
 
 ## Quick start
 

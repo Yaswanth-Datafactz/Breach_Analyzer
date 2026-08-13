@@ -34,7 +34,7 @@ class CampaignDirective(BaseModel):
 
 class AgentRunCreateIn(BaseModel):
     """POST /agents/runs: manual dispatch of a LIVE agent run (requires
-    ANTHROPIC_API_KEY -- 409 otherwise). Budget overrides replace the
+    OPENAI_API_KEY -- 409 otherwise). Budget overrides replace the
     config defaults for this run only; `force_failure` is the scripted demo
     knob (docs/plan.md §3: investigator vs the password-protected PDF at a
     4-step budget -> budget_exceeded with diagnosis-so-far in the trace)."""

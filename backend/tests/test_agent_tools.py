@@ -20,7 +20,7 @@ from app.repositories.agent_runs import AgentRunRepository
 from app.services.agents.tools import (
     REGISTRY,
     ToolContext,
-    anthropic_tool_definitions,
+    openai_tool_definitions,
     run_tool,
 )
 from tests.agent_env import build_agent_env, teardown_agent_env
@@ -82,16 +82,16 @@ def test_registry_matches_plan_table():
         assert spec.args_model.model_json_schema()["type"] == "object"
 
 
-def test_anthropic_definitions_derive_from_args_models():
-    definitions = anthropic_tool_definitions(["decide", "get_passage_text"])
-    by_name = {d["name"]: d for d in definitions}
-    assert set(by_name["decide"]["input_schema"]["properties"]) == {
+def test_openai_definitions_derive_from_args_models():
+    definitions = openai_tool_definitions(["decide", "get_passage_text"])
+    by_name = {d["function"]["name"]: d for d in definitions}
+    assert set(by_name["decide"]["function"]["parameters"]["properties"]) == {
         "left_mention_id",
         "right_mention_id",
         "decision",
         "rationale",
     }
-    assert "passage_id" in by_name["get_passage_text"]["input_schema"]["properties"]
+    assert "passage_id" in by_name["get_passage_text"]["function"]["parameters"]["properties"]
 
 
 def test_args_validated_before_execution(db):
@@ -183,7 +183,7 @@ def test_decide_bulk_merge_stops_at_approval_gate(db, env):
     run = AgentRunRepository(db).create(
         agent_kind="adjudicator",
         trigger={},
-        model="claude-opus-5",
+        model="gpt-5.6-sol",
         budget_max_steps=10,
         budget_max_tokens=None,
         budget_max_usd=0.30,

@@ -1,8 +1,8 @@
 """Provider-agnostic extraction adapters (docs/plan.md D3) -- one ABC,
 settings-selected concrete implementations, mirroring UC2's adapter
-pattern. Tier 1 is DeepSeek (text only); tier 2 is Anthropic
-(text + vision, extraction/claude.py) and is OPTIONAL at runtime: without
-an Anthropic key there is no tier-2 adapter and the extraction service
+pattern. Tier 1 is DeepSeek (text only); tier 2 is OpenAI
+(text + vision, extraction/openai_adapter.py) and is OPTIONAL at runtime:
+without an OpenAI key there is no tier-2 adapter and the extraction service
 degrades gracefully (review flags instead of escalations) -- the same
 config-only contract the pipeline applies to tier 1.
 """
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from app.core.config import Settings
 from app.services.extraction.base import ExtractionAdapter
-from app.services.extraction.claude import ClaudeExtractionAdapter
 from app.services.extraction.deepseek import DeepSeekExtractionAdapter
+from app.services.extraction.openai_adapter import OpenAIExtractionAdapter
 
 
 def get_tier1_adapter(settings: Settings) -> ExtractionAdapter:
@@ -28,13 +28,13 @@ def get_tier1_adapter(settings: Settings) -> ExtractionAdapter:
 
 
 def get_tier2_adapter(settings: Settings) -> ExtractionAdapter | None:
-    """Tier 2: Anthropic text+vision escalation (docs/plan.md D3). Returns
+    """Tier 2: OpenAI text+vision escalation (docs/plan.md D3). Returns
     None when no key is configured -- callers treat that as 'escalation
     unavailable', never as an error (the keyed run later is config-only)."""
-    if not settings.anthropic_api_key:
+    if not settings.openai_api_key:
         return None
-    return ClaudeExtractionAdapter(
-        api_key=settings.anthropic_api_key,
+    return OpenAIExtractionAdapter(
+        api_key=settings.openai_api_key,
         model=settings.tier2_model,
     )
 
@@ -42,7 +42,7 @@ def get_tier2_adapter(settings: Settings) -> ExtractionAdapter | None:
 __all__ = [
     "ExtractionAdapter",
     "DeepSeekExtractionAdapter",
-    "ClaudeExtractionAdapter",
+    "OpenAIExtractionAdapter",
     "get_tier1_adapter",
     "get_tier2_adapter",
 ]

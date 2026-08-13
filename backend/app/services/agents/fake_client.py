@@ -53,7 +53,7 @@ class FakeModelClient:
         self.calls.append(
             {
                 "model": model,
-                "tools": [t["name"] for t in tools],
+                "tools": [t["function"]["name"] for t in tools],
                 "message_count": len(messages),
             }
         )

@@ -207,7 +207,7 @@ def test_tier0_disagreement_escalates_to_tier2(db):
                 ],
             }
         ],
-        logprobs=None,  # the Anthropic tier exposes none -- composite renormalizes
+        logprobs=None,  # gpt-5.6-terra is a reasoning model and exposes none -- composite renormalizes
     )
     outcome = _run(db, document, tier1, tier2)
 

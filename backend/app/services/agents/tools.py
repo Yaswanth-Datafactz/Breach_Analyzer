@@ -208,16 +208,28 @@ def run_tool(db: Session, name: str, raw_args: dict, ctx: ToolContext) -> ToolRe
     return result
 
 
-def anthropic_tool_definitions(names: list[str]) -> list[dict]:
-    """Facade 1 (docs/plan.md D4): native Anthropic `tools` entries derived
-    from the Pydantic args models -- no transport overhead per turn."""
+def openai_tool_definitions(names: list[str]) -> list[dict]:
+    """Facade 1 (docs/plan.md D4, revised 2026-08-12: OpenAI swapped in for
+    Anthropic): OpenAI `tools` entries (chat.completions function-calling
+    shape) derived from the same Pydantic args models -- no transport
+    overhead per turn. `strict` is deliberately omitted, same reasoning as
+    extraction/openai_adapter.py's response_format choice: strict mode
+    requires transforming the schema into OpenAI's narrower compliant
+    subset, unverifiable without a live call and unsafe to guess at."""
     definitions = []
     for name in names:
         spec = REGISTRY[name]
         schema = spec.args_model.model_json_schema()
         schema.setdefault("type", "object")
         definitions.append(
-            {"name": spec.name, "description": spec.description, "input_schema": schema}
+            {
+                "type": "function",
+                "function": {
+                    "name": spec.name,
+                    "description": spec.description,
+                    "parameters": schema,
+                },
+            }
         )
     return definitions
 
